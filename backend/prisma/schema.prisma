@@ -1,0 +1,155 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  CONSULTANT
+  CLIENT
+}
+
+enum AssessmentType {
+  EXPRESS
+  ADVANCED
+}
+
+enum AssessmentStatus {
+  DRAFT
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum RiskLevel {
+  CONTROLLED
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+  LATENT
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  name      String
+  role      Role     @default(CLIENT)
+  tenantId  String?
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assessments Assessment[]
+
+  @@map("users")
+}
+
+model Tenant {
+  id        String   @id @default(uuid())
+  name      String
+  domain    String?  @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users   User[]
+  clients Client[]
+
+  @@map("tenants")
+}
+
+model Client {
+  id           String   @id @default(uuid())
+  name         String
+  industry     String?
+  contactEmail String?
+  contactName  String?
+  tenantId     String
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  assessments Assessment[]
+
+  @@map("clients")
+}
+
+model Assessment {
+  id            String           @id @default(uuid())
+  type          AssessmentType
+  status        AssessmentStatus @default(DRAFT)
+  clientId      String
+  client        Client           @relation(fields: [clientId], references: [id])
+  createdById   String
+  createdBy     User             @relation(fields: [createdById], references: [id])
+  overallScore  Float?
+  maturityLevel Int?
+  riskLevel     RiskLevel?
+  completedAt   DateTime?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  answers      Answer[]
+  pillarScores PillarScore[]
+
+  @@map("assessments")
+}
+
+model Pillar {
+  id          String  @id @default(uuid())
+  name        String
+  key         String  @unique
+  description String?
+  weight      Float   @default(1.0)
+  order       Int     @default(0)
+
+  questions    Question[]
+  pillarScores PillarScore[]
+
+  @@map("pillars")
+}
+
+model Question {
+  id             String         @id @default(uuid())
+  text           String
+  pillarId       String
+  pillar         Pillar         @relation(fields: [pillarId], references: [id])
+  assessmentType AssessmentType
+  order          Int            @default(0)
+
+  answers Answer[]
+
+  @@map("questions")
+}
+
+model Answer {
+  id            String     @id @default(uuid())
+  assessmentId  String
+  assessment    Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  questionId    String
+  question      Question   @relation(fields: [questionId], references: [id])
+  score         Int        @default(0)
+  notApplicable Boolean    @default(false)
+
+  @@unique([assessmentId, questionId])
+  @@map("answers")
+}
+
+model PillarScore {
+  id            String     @id @default(uuid())
+  assessmentId  String
+  assessment    Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  pillarId      String
+  pillar        Pillar     @relation(fields: [pillarId], references: [id])
+  score         Float
+  answeredCount Int
+  totalCount    Int
+
+  @@unique([assessmentId, pillarId])
+  @@map("pillar_scores")
+}
