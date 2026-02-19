@@ -9,60 +9,52 @@ dashboardRouter.use(authenticate as any);
 // GET /api/dashboard/stats
 dashboardRouter.get('/stats', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-        const tenantFilter: any = {};
-        if (req.user!.tenantId) {
-            tenantFilter.tenantId = req.user!.tenantId;
+        const { role, tenantId, userId } = req.user!;
+
+        // Build assessment filter based on role
+        const assessmentFilter: any = {};
+        const clientFilter: any = {};
+
+        if (role === 'CLIENT') {
+            // CLIENT only sees assessments they created
+            assessmentFilter.createdById = userId;
+            // CLIENT doesn't see the clients list (maybe only their own org)
+        } else if (role === 'CONSULTANT') {
+            // CONSULTANT sees assessments they created within their tenant
+            assessmentFilter.createdById = userId;
+            if (tenantId) clientFilter.tenantId = tenantId;
+        } else {
+            // ADMIN sees everything in their tenant
+            if (tenantId) {
+                assessmentFilter.client = { tenantId };
+                clientFilter.tenantId = tenantId;
+            }
         }
 
+        const completedFilter = { ...assessmentFilter, status: 'COMPLETED' };
+
         const [totalClients, totalAssessments, completedAssessments] = await Promise.all([
-            prisma.client.count({ where: tenantFilter }),
-            prisma.assessment.count({
-                where: req.user!.tenantId
-                    ? { client: { tenantId: req.user!.tenantId } }
-                    : undefined,
-            }),
-            prisma.assessment.count({
-                where: {
-                    status: 'COMPLETED',
-                    ...(req.user!.tenantId
-                        ? { client: { tenantId: req.user!.tenantId } }
-                        : {}),
-                },
-            }),
+            prisma.client.count({ where: clientFilter }),
+            prisma.assessment.count({ where: assessmentFilter }),
+            prisma.assessment.count({ where: completedFilter }),
         ]);
 
         // Average maturity across completed assessments
         const avgResult = await prisma.assessment.aggregate({
-            where: {
-                status: 'COMPLETED',
-                ...(req.user!.tenantId
-                    ? { client: { tenantId: req.user!.tenantId } }
-                    : {}),
-            },
+            where: completedFilter,
             _avg: { overallScore: true },
         });
 
         // Risk distribution
         const riskDistribution = await prisma.assessment.groupBy({
             by: ['riskLevel'],
-            where: {
-                status: 'COMPLETED',
-                riskLevel: { not: null },
-                ...(req.user!.tenantId
-                    ? { client: { tenantId: req.user!.tenantId } }
-                    : {}),
-            },
+            where: { ...completedFilter, riskLevel: { not: null } },
             _count: true,
         });
 
         // Recent assessments
         const recentAssessments = await prisma.assessment.findMany({
-            where: {
-                status: 'COMPLETED',
-                ...(req.user!.tenantId
-                    ? { client: { tenantId: req.user!.tenantId } }
-                    : {}),
-            },
+            where: completedFilter,
             include: {
                 client: { select: { name: true } },
                 pillarScores: { include: { pillar: true }, orderBy: { pillar: { order: 'asc' } } },

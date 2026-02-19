@@ -47,10 +47,15 @@ assessmentRouter.post('/', requireRole('ADMIN', 'CONSULTANT') as any, async (req
 assessmentRouter.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
         const where: any = {};
+        const { role, tenantId, userId } = req.user!;
 
-        // Tenant filtering
-        if (req.user!.tenantId) {
-            where.client = { tenantId: req.user!.tenantId };
+        // Role-based scoping
+        if (role === 'CLIENT') {
+            where.createdById = userId;
+        } else if (role === 'CONSULTANT') {
+            where.createdById = userId;
+        } else if (role === 'ADMIN' && tenantId) {
+            where.client = { tenantId };
         }
 
         if (req.query.clientId) {

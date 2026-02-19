@@ -32,20 +32,19 @@ export default function Layout() {
             {/* Sidebar */}
             <aside className={`
         fixed lg:sticky top-0 left-0 z-50 h-screen w-64 bg-surface-900/95 backdrop-blur-xl
-        border-r border-surface-800/80 flex flex-col transition-transform duration-300
+        border-r border-primary-800/30 flex flex-col transition-transform duration-300
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
       `}>
-                {/* Logo */}
-                <div className="p-6 border-b border-surface-800/80">
+                {/* Gamma Ingenieros Logo */}
+                <div className="p-5 border-b border-primary-800/30">
                     <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-accent-cyan flex items-center justify-center text-white font-bold text-lg">
-                            AI
-                        </div>
-                        <div>
-                            <h1 className="text-sm font-bold text-surface-100 leading-tight">AI Governance</h1>
-                            <p className="text-[10px] text-surface-500 uppercase tracking-wider">Security Assessment</p>
-                        </div>
+                        <img
+                            src="/logo-gamma.png"
+                            alt="Gamma Ingenieros"
+                            className="h-10 brightness-0 invert"
+                        />
                     </div>
+                    <p className="text-[10px] text-primary-400 mt-2 uppercase tracking-widest font-medium">Assessment Platform</p>
                 </div>
 
                 {/* Navigation */}
@@ -71,7 +70,7 @@ export default function Layout() {
                 </nav>
 
                 {/* User section */}
-                <div className="p-4 border-t border-surface-800/80">
+                <div className="p-4 border-t border-primary-800/30">
                     <div className="glass-card p-3">
                         <div className="flex items-center gap-3">
                             <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-primary-600 to-accent-violet flex items-center justify-center text-white font-semibold text-sm">
@@ -79,12 +78,12 @@ export default function Layout() {
                             </div>
                             <div className="flex-1 min-w-0">
                                 <p className="text-sm font-medium text-surface-200 truncate">{user?.name}</p>
-                                <p className="text-xs text-surface-500 truncate">{user?.role}</p>
+                                <p className="text-xs text-primary-400/70 truncate">{user?.role}</p>
                             </div>
                         </div>
                         <button
                             onClick={handleLogout}
-                            className="mt-3 w-full text-xs text-surface-500 hover:text-red-400 transition-colors py-1.5 rounded border border-surface-700/50 hover:border-red-500/30 hover:bg-red-500/5"
+                            className="mt-3 w-full text-xs text-surface-500 hover:text-red-400 transition-colors py-1.5 rounded border border-primary-700/30 hover:border-red-500/30 hover:bg-red-500/5"
                         >
                             Cerrar Sesión
                         </button>
@@ -95,7 +94,7 @@ export default function Layout() {
             {/* Main content */}
             <div className="flex-1 flex flex-col min-h-screen">
                 {/* Top bar */}
-                <header className="sticky top-0 z-30 bg-surface-950/80 backdrop-blur-xl border-b border-surface-800/50 px-6 py-4">
+                <header className="sticky top-0 z-30 bg-surface-950/80 backdrop-blur-xl border-b border-primary-800/20 px-6 py-4">
                     <div className="flex items-center justify-between">
                         <button
                             onClick={() => setSidebarOpen(true)}
@@ -107,7 +106,7 @@ export default function Layout() {
                         </button>
                         <div className="hidden lg:block">
                             <h2 className="text-lg font-semibold text-surface-200">
-                                AI Governance & Security Assessment
+                                Gamma Ingenieros — AI Governance
                             </h2>
                         </div>
                         <div className="flex items-center gap-3">
