@@ -1,5 +1,6 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Layout from './components/Layout';
 import LoginPage from './pages/LoginPage';
@@ -9,6 +10,8 @@ import AssessmentsPage from './pages/AssessmentsPage';
 import NewAssessmentPage from './pages/NewAssessmentPage';
 import ResultsPage from './pages/ResultsPage';
 import ComparePage from './pages/ComparePage';
+
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
     const { user, isLoading } = useAuth();
@@ -24,25 +27,27 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 export default function App() {
     return (
-        <AuthProvider>
-            <BrowserRouter>
-                <Routes>
-                    <Route path="/login" element={<LoginPage />} />
-                    <Route path="/" element={
-                        <ProtectedRoute>
-                            <Layout />
-                        </ProtectedRoute>
-                    }>
-                        <Route index element={<DashboardPage />} />
-                        <Route path="clients" element={<ClientsPage />} />
-                        <Route path="assessments" element={<AssessmentsPage />} />
-                        <Route path="assessments/new" element={<NewAssessmentPage />} />
-                        <Route path="assessments/:id/results" element={<ResultsPage />} />
-                        <Route path="compare" element={<ComparePage />} />
-                    </Route>
-                    <Route path="*" element={<Navigate to="/" />} />
-                </Routes>
-            </BrowserRouter>
-        </AuthProvider>
+        <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
+            <AuthProvider>
+                <BrowserRouter>
+                    <Routes>
+                        <Route path="/login" element={<LoginPage />} />
+                        <Route path="/" element={
+                            <ProtectedRoute>
+                                <Layout />
+                            </ProtectedRoute>
+                        }>
+                            <Route index element={<DashboardPage />} />
+                            <Route path="clients" element={<ClientsPage />} />
+                            <Route path="assessments" element={<AssessmentsPage />} />
+                            <Route path="assessments/new" element={<NewAssessmentPage />} />
+                            <Route path="assessments/:id/results" element={<ResultsPage />} />
+                            <Route path="compare" element={<ComparePage />} />
+                        </Route>
+                        <Route path="*" element={<Navigate to="/" />} />
+                    </Routes>
+                </BrowserRouter>
+            </AuthProvider>
+        </GoogleOAuthProvider>
     );
 }

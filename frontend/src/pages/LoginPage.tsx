@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { GoogleLogin } from '@react-oauth/google';
 import { useAuth } from '../context/AuthContext';
 
 export default function LoginPage() {
@@ -9,7 +10,7 @@ export default function LoginPage() {
     const [name, setName] = useState('');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
-    const { login, register } = useAuth();
+    const { login, loginWithGoogle, register } = useAuth();
     const navigate = useNavigate();
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -25,6 +26,19 @@ export default function LoginPage() {
             navigate('/');
         } catch (err: any) {
             setError(err.response?.data?.error || 'Error de conexión');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleGoogleSuccess = async (credentialResponse: any) => {
+        setError('');
+        setLoading(true);
+        try {
+            await loginWithGoogle(credentialResponse.credential);
+            navigate('/');
+        } catch (err: any) {
+            setError(err.response?.data?.error || 'Error al autenticar con Google');
         } finally {
             setLoading(false);
         }
@@ -49,7 +63,7 @@ export default function LoginPage() {
                     <p className="text-sm text-surface-500 mt-1">Security Maturity Assessment Platform</p>
                 </div>
 
-                {/* Form */}
+                {/* Form Card */}
                 <div className="glass-card p-8 fade-in" style={{ animationDelay: '0.1s' }}>
                     <h2 className="text-xl font-semibold text-surface-100 mb-6">
                         {isRegister ? 'Crear Cuenta' : 'Iniciar Sesión'}
@@ -61,6 +75,32 @@ export default function LoginPage() {
                         </div>
                     )}
 
+                    {/* Google Login Button */}
+                    <div className="mb-5">
+                        <div className="flex justify-center">
+                            <GoogleLogin
+                                onSuccess={handleGoogleSuccess}
+                                onError={() => setError('Error al conectar con Google')}
+                                theme="filled_black"
+                                shape="pill"
+                                size="large"
+                                width="350"
+                                text={isRegister ? 'signup_with' : 'signin_with'}
+                            />
+                        </div>
+                    </div>
+
+                    {/* Divider */}
+                    <div className="relative mb-5">
+                        <div className="absolute inset-0 flex items-center">
+                            <div className="w-full border-t border-surface-700/50" />
+                        </div>
+                        <div className="relative flex justify-center text-xs">
+                            <span className="px-3 bg-surface-800/50 text-surface-500 rounded">o usa tu email</span>
+                        </div>
+                    </div>
+
+                    {/* Email/Password Form */}
                     <form onSubmit={handleSubmit} className="space-y-4">
                         {isRegister && (
                             <div>

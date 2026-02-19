@@ -33,19 +33,30 @@ export default function ResultsPage() {
             .finally(() => setLoading(false));
     }, [id]);
 
+    const [downloading, setDownloading] = useState(false);
+
     const handleDownloadPDF = async () => {
+        setDownloading(true);
         try {
             const res = await api.get(`/reports/${id}/pdf`, { responseType: 'blob' });
-            const url = window.URL.createObjectURL(new Blob([res.data]));
+            const blob = new Blob([res.data], { type: 'application/pdf' });
+            const url = window.URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
-            link.setAttribute('download', `assessment-report-${id}.pdf`);
+            link.download = `assessment-report-${id}.pdf`;
+            link.style.display = 'none';
             document.body.appendChild(link);
             link.click();
-            link.remove();
-            window.URL.revokeObjectURL(url);
+            // Delay cleanup so the browser can start the download
+            setTimeout(() => {
+                document.body.removeChild(link);
+                window.URL.revokeObjectURL(url);
+            }, 3000);
         } catch (err) {
-            console.error(err);
+            console.error('Error descargando PDF:', err);
+            alert('Error al descargar el reporte PDF');
+        } finally {
+            setDownloading(false);
         }
     };
 
@@ -73,9 +84,18 @@ export default function ResultsPage() {
                         {assessment.client?.name} · {assessment.type} · {assessment.completedAt ? new Date(assessment.completedAt).toLocaleDateString('es-ES') : 'N/A'}
                     </p>
                 </div>
-                <button onClick={handleDownloadPDF} className="btn-primary flex items-center gap-2">
-                    <span>📄</span>
-                    <span>Descargar PDF</span>
+                <button onClick={handleDownloadPDF} disabled={downloading} className="btn-primary flex items-center gap-2">
+                    {downloading ? (
+                        <>
+                            <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                            <span>Generando...</span>
+                        </>
+                    ) : (
+                        <>
+                            <span>📄</span>
+                            <span>Descargar PDF</span>
+                        </>
+                    )}
                 </button>
             </div>
 
@@ -159,8 +179,8 @@ export default function ResultsPage() {
                         <div
                             key={m.level}
                             className={`p-3 rounded-lg text-center border transition-all ${assessment.maturityLevel === m.level
-                                    ? 'border-primary-500/50 bg-primary-500/10 ring-1 ring-primary-500/20'
-                                    : 'border-surface-700/30 bg-surface-800/30'
+                                ? 'border-primary-500/50 bg-primary-500/10 ring-1 ring-primary-500/20'
+                                : 'border-surface-700/30 bg-surface-800/30'
                                 }`}
                         >
                             <p className={`text-lg font-bold ${assessment.maturityLevel === m.level ? 'text-primary-400' : 'text-surface-400'}`}>

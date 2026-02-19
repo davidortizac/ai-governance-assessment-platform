@@ -1,12 +1,100 @@
 import { Router, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { OAuth2Client } from 'google-auth-library';
 import prisma from '../lib/prisma';
 import { authenticate, AuthRequest, requireRole } from '../middleware/auth';
 
 export const authRouter = Router();
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret';
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
+
+// POST /api/auth/google — Login with Google OAuth
+authRouter.post('/google', async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const { credential } = req.body;
+
+        if (!credential) {
+            res.status(400).json({ error: 'Token de Google requerido' });
+            return;
+        }
+
+        // Verify the Google ID token
+        const ticket = await googleClient.verifyIdToken({
+            idToken: credential,
+            audience: GOOGLE_CLIENT_ID,
+        });
+
+        const payload = ticket.getPayload();
+        if (!payload || !payload.email) {
+            res.status(401).json({ error: 'Token de Google inválido' });
+            return;
+        }
+
+        const { email, name, sub: googleId, hd: hostedDomain } = payload;
+
+        // Find or create user
+        let user = await prisma.user.findUnique({ where: { email } });
+
+        if (!user) {
+            // Auto-create user on first Google login
+            // Try to find a tenant matching the corporate domain
+            let tenantId: string | undefined;
+
+            if (hostedDomain) {
+                const tenant = await prisma.tenant.findFirst({
+                    where: { domain: hostedDomain },
+                });
+                if (tenant) {
+                    tenantId = tenant.id;
+                }
+            }
+
+            // If no matching tenant, use or create default
+            if (!tenantId) {
+                let defaultTenant = await prisma.tenant.findFirst({ where: { domain: 'default' } });
+                if (!defaultTenant) {
+                    defaultTenant = await prisma.tenant.create({
+                        data: { name: 'Default Organization', domain: 'default' },
+                    });
+                }
+                tenantId = defaultTenant.id;
+            }
+
+            // Create user with a random password (they'll only use Google login)
+            const randomPassword = await bcrypt.hash(Math.random().toString(36) + Date.now(), 12);
+
+            user = await prisma.user.create({
+                data: {
+                    email,
+                    password: randomPassword,
+                    name: name || email.split('@')[0],
+                    role: 'CLIENT', // Default role for Google login users
+                    tenantId,
+                },
+            });
+
+            console.log(`✅ New user created via Google OAuth: ${email} (domain: ${hostedDomain || 'personal'})`);
+        }
+
+        // Generate JWT
+        const token = jwt.sign(
+            { userId: user.id, email: user.email, role: user.role, tenantId: user.tenantId },
+            JWT_SECRET,
+            { expiresIn: '24h' }
+        );
+
+        res.json({
+            user: { id: user.id, email: user.email, name: user.name, role: user.role },
+            token,
+        });
+    } catch (error: any) {
+        console.error('Google auth error:', error?.message || error);
+        res.status(401).json({ error: 'Error al autenticar con Google' });
+    }
+});
 
 // POST /api/auth/register
 authRouter.post('/register', async (req: AuthRequest, res: Response): Promise<void> => {
