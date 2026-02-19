@@ -8,6 +8,13 @@ interface Client {
     contactEmail: string | null;
     contactName: string | null;
     _count: { assessments: number };
+    assessments: Array<{
+        id: string;
+        type: string;
+        status: string;
+        createdAt: string;
+        createdBy: { id: string; name: string; email: string } | null;
+    }>;
     createdAt: string;
 }
 
@@ -111,6 +118,7 @@ export default function ClientsPage() {
                                     <th className="text-left px-6 py-4 text-xs font-medium text-surface-500 uppercase tracking-wider">Nombre</th>
                                     <th className="text-left px-6 py-4 text-xs font-medium text-surface-500 uppercase tracking-wider">Industria</th>
                                     <th className="text-left px-6 py-4 text-xs font-medium text-surface-500 uppercase tracking-wider">Contacto</th>
+                                    <th className="text-left px-6 py-4 text-xs font-medium text-surface-500 uppercase tracking-wider">Evaluador</th>
                                     <th className="text-center px-6 py-4 text-xs font-medium text-surface-500 uppercase tracking-wider">Evaluaciones</th>
                                     <th className="text-right px-6 py-4 text-xs font-medium text-surface-500 uppercase tracking-wider">Acciones</th>
                                 </tr>
@@ -124,6 +132,16 @@ export default function ClientsPage() {
                                         </td>
                                         <td className="px-6 py-4 text-sm text-surface-400">{client.industry || '-'}</td>
                                         <td className="px-6 py-4 text-sm text-surface-400">{client.contactName || '-'}</td>
+                                        <td className="px-6 py-4">
+                                            {client.assessments?.[0]?.createdBy ? (
+                                                <div>
+                                                    <p className="text-sm text-surface-200">{client.assessments[0].createdBy.name}</p>
+                                                    <p className="text-xs text-surface-500">{client.assessments[0].createdBy.email}</p>
+                                                </div>
+                                            ) : (
+                                                <span className="text-sm text-surface-500">—</span>
+                                            )}
+                                        </td>
                                         <td className="px-6 py-4 text-center">
                                             <span className="badge-info">{client._count.assessments}</span>
                                         </td>
@@ -139,7 +157,7 @@ export default function ClientsPage() {
                                 ))}
                                 {clients.length === 0 && (
                                     <tr>
-                                        <td colSpan={5} className="px-6 py-12 text-center text-surface-500">
+                                        <td colSpan={6} className="px-6 py-12 text-center text-surface-500">
                                             No se encontraron clientes
                                         </td>
                                     </tr>

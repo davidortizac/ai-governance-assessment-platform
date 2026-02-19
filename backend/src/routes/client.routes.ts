@@ -10,17 +10,37 @@ clientRouter.use(authenticate as any);
 // GET /api/clients
 clientRouter.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
+        const { role, tenantId, userId } = req.user!;
         const where: any = {};
-        if (req.user!.tenantId) {
-            where.tenantId = req.user!.tenantId;
+
+        // Data isolation: non-admins only see clients they created
+        if (role === 'ADMIN') {
+            if (tenantId) where.tenantId = tenantId;
+        } else {
+            where.createdById = userId;
         }
+
         if (req.query.search) {
             where.name = { contains: req.query.search as string, mode: 'insensitive' };
         }
 
         const clients = await prisma.client.findMany({
             where,
-            include: { _count: { select: { assessments: true } } },
+            include: {
+                _count: { select: { assessments: true } },
+                createdBy: { select: { id: true, name: true, email: true } },
+                assessments: {
+                    select: {
+                        id: true,
+                        type: true,
+                        status: true,
+                        createdAt: true,
+                        createdBy: { select: { id: true, name: true, email: true } },
+                    },
+                    orderBy: { createdAt: 'desc' },
+                    take: 1,
+                },
+            },
             orderBy: { createdAt: 'desc' },
         });
         res.json(clients);
@@ -37,7 +57,10 @@ clientRouter.get('/:id', async (req: AuthRequest, res: Response): Promise<void> 
             where: { id: req.params.id },
             include: {
                 assessments: {
-                    include: { pillarScores: { include: { pillar: true } } },
+                    include: {
+                        pillarScores: { include: { pillar: true } },
+                        createdBy: { select: { id: true, name: true, email: true } },
+                    },
                     orderBy: { createdAt: 'desc' },
                 },
             },
@@ -54,7 +77,7 @@ clientRouter.get('/:id', async (req: AuthRequest, res: Response): Promise<void> 
 });
 
 // POST /api/clients
-clientRouter.post('/', requireRole('ADMIN', 'CONSULTANT') as any, async (req: AuthRequest, res: Response): Promise<void> => {
+clientRouter.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
         const { name, industry, contactEmail, contactName } = req.body;
         const client = await prisma.client.create({
@@ -64,6 +87,7 @@ clientRouter.post('/', requireRole('ADMIN', 'CONSULTANT') as any, async (req: Au
                 contactEmail,
                 contactName,
                 tenantId: req.user!.tenantId!,
+                createdById: req.user!.userId,
             },
         });
         res.status(201).json(client);
