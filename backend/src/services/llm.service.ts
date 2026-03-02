@@ -9,9 +9,10 @@
 import https from 'https';
 import http from 'http';
 
-const OLLAMA_URL = process.env.OLLAMA_URL ?? 'http://host.docker.internal:11434/v1/chat/completions';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? 'deepseek-r1:8b';
-const OLLAMA_TIMEOUT_MS = parseInt(process.env.OLLAMA_TIMEOUT_MS ?? '300000', 10);
+// Read fresh from process.env on every call so runtime changes (model selection) take effect
+const getOllamaUrl     = () => process.env.OLLAMA_URL      ?? 'http://host.docker.internal:11434/v1/chat/completions';
+const getOllamaModel   = () => process.env.OLLAMA_MODEL    ?? 'deepseek-r1:8b';
+const getOllamaTimeout = () => parseInt(process.env.OLLAMA_TIMEOUT_MS ?? '300000', 10);
 
 /**
  * POST JSON to a URL using Node's native http/https.
@@ -54,6 +55,41 @@ function httpPost(url: string, body: string, timeoutMs: number): Promise<{ statu
     });
 }
 
+/**
+ * GET a URL using Node's native http/https.
+ */
+function httpGet(url: string, timeoutMs: number): Promise<{ status: number; body: string }> {
+    return new Promise((resolve, reject) => {
+        const parsed  = new URL(url);
+        const isHttps = parsed.protocol === 'https:';
+        const lib     = isHttps ? https : http;
+        const port    = parsed.port ? parseInt(parsed.port, 10) : (isHttps ? 443 : 80);
+
+        const options: https.RequestOptions = {
+            hostname: parsed.hostname,
+            port,
+            path: parsed.pathname + parsed.search,
+            method: 'GET',
+            headers: { 'Accept': 'application/json' },
+            timeout: timeoutMs,
+            rejectUnauthorized: false,
+        };
+
+        const req = lib.request(options, (res) => {
+            let data = '';
+            res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+            res.on('end', () => resolve({ status: res.statusCode ?? 0, body: data }));
+            res.on('error', reject);
+        });
+
+        req.on('timeout', () => {
+            req.destroy(new Error(`LLM GET timed out after ${timeoutMs}ms (${url})`));
+        });
+        req.on('error', reject);
+        req.end();
+    });
+}
+
 export interface LLMAnalysis {
     generatedAt: string;
     model: string;
@@ -76,6 +112,45 @@ export interface LLMAnalysis {
 /** Remove <think>...</think> blocks produced by deepseek-r1 models. */
 function stripThinkTags(raw: string): string {
     return raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+}
+
+/**
+ * Attempt to repair common LLM JSON issues before parsing.
+ * - Trailing commas before } or ]
+ * - Extra text / markdown after the closing }
+ */
+function repairJson(raw: string): string {
+    // Remove trailing commas before ] or }
+    return raw.replace(/,(\s*[}\]])/g, '$1');
+}
+
+/**
+ * Extract the first complete JSON object from text using bracket counting.
+ * More robust than a plain regex — correctly handles nested objects/arrays.
+ */
+function extractJsonObject(text: string): string {
+    const start = text.indexOf('{');
+    if (start === -1) throw new Error('No JSON object found in LLM response');
+
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+
+    for (let i = start; i < text.length; i++) {
+        const c = text[i];
+        if (escape) { escape = false; continue; }
+        if (c === '\\' && inString) { escape = true; continue; }
+        if (c === '"') { inString = !inString; continue; }
+        if (inString) continue;
+        if (c === '{' || c === '[') depth++;
+        if (c === '}' || c === ']') {
+            depth--;
+            if (depth === 0) return text.slice(start, i + 1);
+        }
+    }
+
+    // Truncated response — return what we have and let the caller try repair
+    return text.slice(start);
 }
 
 /** Convert numeric score (0-4) to a human-readable label for the prompt. */
@@ -151,6 +226,7 @@ function buildPrompt(assessment: any): string {
     }
 
     const pillarSection = pillarLines.join('\n');
+    const activeModel = getOllamaModel();
 
     return `Eres un experto consultor en ciberseguridad de inteligencia artificial analizando una evaluación de madurez CSIA.
 
@@ -175,7 +251,7 @@ Responde ÚNICAMENTE con el siguiente JSON válido (sin markdown, sin texto adic
 
 {
   "generatedAt": "<ISO timestamp actual>",
-  "model": "${OLLAMA_MODEL}",
+  "model": "${activeModel}",
   "executiveSummary": "<3-5 oraciones de diagnóstico contextual basado en los datos reales>",
   "awarenessMessage": "<Por qué la seguridad en IA es crítica para el sector ${industry}, basado en el perfil de riesgo detectado>",
   "industryBenchmark": "<Comparación del nivel de madurez ${maturityLabel} con organizaciones típicas del sector ${industry}, sin inventar estadísticas>",
@@ -196,9 +272,12 @@ Responde ÚNICAMENTE con el siguiente JSON válido (sin markdown, sin texto adic
 /** Call Ollama API and return structured LLMAnalysis. Throws on failure. */
 export async function generateLLMAnalysis(assessment: any): Promise<LLMAnalysis> {
     const prompt = buildPrompt(assessment);
+    const ollamaUrl     = getOllamaUrl();
+    const ollamaModel   = getOllamaModel();
+    const ollamaTimeout = getOllamaTimeout();
 
     const requestBody = JSON.stringify({
-        model: OLLAMA_MODEL,
+        model: ollamaModel,
         messages: [
             {
                 role: 'system',
@@ -211,10 +290,11 @@ export async function generateLLMAnalysis(assessment: any): Promise<LLMAnalysis>
         ],
         temperature: 0.3,
         stream: false,
+        max_tokens: 2500,
     });
 
-    console.log(`[LLM] POST ${OLLAMA_URL} (model=${OLLAMA_MODEL}, timeout=${OLLAMA_TIMEOUT_MS}ms)`);
-    const { status, body: rawBody } = await httpPost(OLLAMA_URL, requestBody, OLLAMA_TIMEOUT_MS);
+    console.log(`[LLM] POST ${ollamaUrl} (model=${ollamaModel}, timeout=${ollamaTimeout}ms)`);
+    const { status, body: rawBody } = await httpPost(ollamaUrl, requestBody, ollamaTimeout);
 
     if (status >= 400) {
         throw new Error(`Ollama HTTP ${status}: ${rawBody.slice(0, 200)}`);
@@ -232,22 +312,31 @@ export async function generateLLMAnalysis(assessment: any): Promise<LLMAnalysis>
     // Strip <think>...</think> blocks (deepseek-r1)
     const cleaned = stripThinkTags(raw);
 
-    // Defensive JSON extraction — ignore any text before/after the JSON object
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-        throw new Error(`LLM did not return valid JSON. Raw response (first 500 chars): ${cleaned.slice(0, 500)}`);
+    // Extract and parse JSON — with automatic repair for common LLM issues
+    let jsonStr: string;
+    try {
+        jsonStr = extractJsonObject(cleaned);
+    } catch (e) {
+        throw new Error(`LLM did not return a JSON object. Raw response (first 500 chars): ${cleaned.slice(0, 500)}`);
     }
 
     let parsed: LLMAnalysis;
     try {
-        parsed = JSON.parse(jsonMatch[0]) as LLMAnalysis;
-    } catch (e) {
-        throw new Error(`Failed to parse LLM JSON: ${(e as Error).message}. Snippet: ${jsonMatch[0].slice(0, 300)}`);
+        parsed = JSON.parse(jsonStr) as LLMAnalysis;
+    } catch {
+        // Attempt repair (trailing commas, etc.) before giving up
+        const repaired = repairJson(jsonStr);
+        try {
+            parsed = JSON.parse(repaired) as LLMAnalysis;
+            console.warn('[LLM] JSON required repair before parsing — consider switching to a model with better JSON output');
+        } catch (e2) {
+            throw new Error(`Failed to parse LLM JSON even after repair: ${(e2 as Error).message}. Snippet: ${jsonStr.slice(0, 300)}`);
+        }
     }
 
     // Ensure required fields exist (defensive defaults)
     parsed.generatedAt = parsed.generatedAt ?? new Date().toISOString();
-    parsed.model = parsed.model ?? OLLAMA_MODEL;
+    parsed.model = parsed.model ?? ollamaModel;
     parsed.executiveSummary = parsed.executiveSummary ?? '';
     parsed.awarenessMessage = parsed.awarenessMessage ?? '';
     parsed.industryBenchmark = parsed.industryBenchmark ?? '';
@@ -255,4 +344,39 @@ export async function generateLLMAnalysis(assessment: any): Promise<LLMAnalysis>
     parsed.pillarAnalyses = parsed.pillarAnalyses ?? {};
 
     return parsed;
+}
+
+/**
+ * List available models from the Ollama server.
+ * Tries /v1/models (OpenAI-compatible) first, then /api/tags (Ollama native).
+ */
+export async function listOllamaModels(): Promise<{ name: string; size?: number }[]> {
+    const chatUrl = getOllamaUrl();
+    // Derive base URL: strip /v1/chat/completions and everything after
+    const base = chatUrl.replace(/\/v1\/chat\/completions.*$/, '').replace(/\/api\/.*$/, '');
+    const timeout = Math.min(getOllamaTimeout(), 15000); // cap at 15s for listing
+
+    // Try OpenAI-compatible /v1/models first
+    try {
+        const { status, body } = await httpGet(`${base}/v1/models`, timeout);
+        if (status === 200) {
+            const data = JSON.parse(body);
+            if (Array.isArray(data?.data)) {
+                return data.data.map((m: any) => ({ name: m.id, size: undefined }));
+            }
+        }
+    } catch {
+        // fall through to /api/tags
+    }
+
+    // Ollama native /api/tags
+    const { status, body } = await httpGet(`${base}/api/tags`, timeout);
+    if (status !== 200) {
+        throw new Error(`Ollama /api/tags returned HTTP ${status}`);
+    }
+    const data = JSON.parse(body);
+    if (!Array.isArray(data?.models)) {
+        throw new Error('Unexpected /api/tags response format');
+    }
+    return data.models.map((m: any) => ({ name: m.name, size: m.size as number | undefined }));
 }

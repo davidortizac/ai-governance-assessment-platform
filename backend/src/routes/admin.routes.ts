@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import prisma from '../lib/prisma';
 import { authenticate, AuthRequest } from '../middleware/auth';
+import { listOllamaModels } from '../services/llm.service';
 
 export const adminRouter = Router();
 
@@ -115,6 +116,32 @@ adminRouter.delete('/assessments/:id', async (req: AuthRequest, res: Response): 
         console.error('Admin delete error:', error);
         res.status(500).json({ error: 'Error al eliminar assessment' });
     }
+});
+
+// GET /api/admin/llm/status — Test Ollama connection and list available models
+adminRouter.get('/llm/status', async (req: AuthRequest, res: Response): Promise<void> => {
+    if (!requireAdmin(req, res)) return;
+    const url = process.env.OLLAMA_URL ?? 'http://host.docker.internal:11434/v1/chat/completions';
+    const currentModel = process.env.OLLAMA_MODEL ?? 'deepseek-r1:8b';
+    try {
+        const models = await listOllamaModels();
+        res.json({ connected: true, url, currentModel, models });
+    } catch (err: any) {
+        res.json({ connected: false, url, currentModel, models: [], error: err.message ?? 'Error de conexión' });
+    }
+});
+
+// POST /api/admin/llm/model — Set the active LLM model at runtime
+adminRouter.post('/llm/model', (req: AuthRequest, res: Response): void => {
+    if (!requireAdmin(req, res)) return;
+    const { model } = req.body as { model?: string };
+    if (!model || typeof model !== 'string' || !model.trim()) {
+        res.status(400).json({ error: 'El campo model es requerido' });
+        return;
+    }
+    process.env.OLLAMA_MODEL = model.trim();
+    console.log(`[Admin] OLLAMA_MODEL changed to: ${process.env.OLLAMA_MODEL}`);
+    res.json({ success: true, model: process.env.OLLAMA_MODEL });
 });
 
 // GET /api/admin/clients — All clients for tenant

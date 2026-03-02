@@ -37,14 +37,16 @@ export default function ResultsPage() {
     const [exportingCSV, setExportingCSV] = useState(false);
     const [exportingJSON, setExportingJSON] = useState(false);
 
-    // Generic blob downloader — uses Authorization header, never exposes token in URL
+    // Generic blob downloader — uses Authorization header, never exposes token in URL.
+    // Prefers the server's Content-Disposition filename over the local fallback.
     const downloadBlob = async (
         endpoint: string,
-        filename: string,
+        fallbackFilename: string,
         mimeType: string,
         setLoading: (v: boolean) => void
     ) => {
         setLoading(true);
+        let filename = fallbackFilename;
         try {
             const res = await api.get(endpoint, { responseType: 'blob' });
 
@@ -53,6 +55,11 @@ export default function ResultsPage() {
                 const json = JSON.parse(text);
                 throw new Error(json.error || 'Server error');
             }
+
+            // Use the server-provided filename from Content-Disposition if available
+            const disposition: string = res.headers['content-disposition'] ?? '';
+            const match = disposition.match(/filename="([^"]+)"/);
+            filename = match ? match[1] : fallbackFilename;
 
             const blob = new Blob([res.data], { type: mimeType });
             const url = window.URL.createObjectURL(blob);

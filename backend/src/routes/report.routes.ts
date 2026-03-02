@@ -38,35 +38,36 @@ reportRouter.get('/:assessmentId/pdf', async (req: AuthRequest, res: Response): 
         const allowed = await assertReportAccess(assessmentId, req.user!, res);
         if (!allowed) return;
 
-        // If LLM analysis is missing, kick it off in the background (fire-and-forget).
-        // The PDF is generated immediately with fallback text; a subsequent download
-        // will include the full analysis once the model finishes.
+        // If LLM analysis is missing, generate it synchronously so the PDF includes it.
+        // The PDF download will block until the model responds (or fails, in which case
+        // the PDF uses the fallback text).
         const current = await prisma.assessment.findUnique({
             where: { id: assessmentId },
             select: { status: true, llmAnalysis: true },
         });
 
         if (current?.status === 'COMPLETED' && !current?.llmAnalysis) {
-            prisma.assessment.findUnique({
-                where: { id: assessmentId },
-                include: {
-                    client: true,
-                    pillarScores: { include: { pillar: true }, orderBy: { pillar: { order: 'asc' } } },
-                    answers: { include: { question: { include: { pillar: true } } } },
-                },
-            }).then(full => {
-                if (!full) return;
-                return generateLLMAnalysis(full).then(llmAnalysis =>
-                    prisma.assessment.update({
+            try {
+                console.log(`[LLM] On-demand analysis for PDF — assessment ${assessmentId}`);
+                const full = await prisma.assessment.findUnique({
+                    where: { id: assessmentId },
+                    include: {
+                        client: true,
+                        pillarScores: { include: { pillar: true }, orderBy: { pillar: { order: 'asc' } } },
+                        answers: { include: { question: { include: { pillar: true } } } },
+                    },
+                });
+                if (full) {
+                    const llmAnalysis = await generateLLMAnalysis(full);
+                    await prisma.assessment.update({
                         where: { id: assessmentId },
                         data: { llmAnalysis: llmAnalysis as any },
-                    })
-                );
-            }).then(() => {
-                console.log(`[LLM] Background analysis ready for assessment ${assessmentId}`);
-            }).catch(err => {
-                console.error('[LLM] Background analysis failed:', err);
-            });
+                    });
+                    console.log(`[LLM] On-demand analysis saved for assessment ${assessmentId}`);
+                }
+            } catch (err) {
+                console.error('[LLM] On-demand analysis failed (PDF will use fallback):', err);
+            }
         }
 
         const meta = await prisma.assessment.findUnique({
