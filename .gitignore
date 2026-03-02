@@ -5,3 +5,9 @@ build/
 *.log
 .DS_Store
 coverage/
+
+# Sensitive / generated files
+backend/credentials.txt
+backend/token.txt
+backend/*.pdf
+backend/test_api.js

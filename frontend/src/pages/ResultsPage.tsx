@@ -34,31 +34,67 @@ export default function ResultsPage() {
     }, [id]);
 
     const [downloading, setDownloading] = useState(false);
+    const [exportingCSV, setExportingCSV] = useState(false);
+    const [exportingJSON, setExportingJSON] = useState(false);
 
-    const handleDownloadPDF = async () => {
-        setDownloading(true);
+    // Generic blob downloader — uses Authorization header, never exposes token in URL.
+    // Prefers the server's Content-Disposition filename over the local fallback.
+    const downloadBlob = async (
+        endpoint: string,
+        fallbackFilename: string,
+        mimeType: string,
+        setLoading: (v: boolean) => void
+    ) => {
+        setLoading(true);
+        let filename = fallbackFilename;
         try {
-            const res = await api.get(`/reports/${id}/pdf`, { responseType: 'blob' });
-            const blob = new Blob([res.data], { type: 'application/pdf' });
+            const res = await api.get(endpoint, { responseType: 'blob' });
+
+            if (res.headers['content-type']?.includes('application/json')) {
+                const text = await (res.data as Blob).text();
+                const json = JSON.parse(text);
+                throw new Error(json.error || 'Server error');
+            }
+
+            // Use the server-provided filename from Content-Disposition if available
+            const disposition: string = res.headers['content-disposition'] ?? '';
+            const match = disposition.match(/filename="([^"]+)"/);
+            filename = match ? match[1] : fallbackFilename;
+
+            const blob = new Blob([res.data], { type: mimeType });
             const url = window.URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
-            link.download = `assessment-report-${id}.pdf`;
+            link.download = filename;
             link.style.display = 'none';
             document.body.appendChild(link);
             link.click();
-            // Delay cleanup so the browser can start the download
             setTimeout(() => {
                 document.body.removeChild(link);
                 window.URL.revokeObjectURL(url);
             }, 3000);
-        } catch (err) {
-            console.error('Error descargando PDF:', err);
-            alert('Error al descargar el reporte PDF');
+        } catch (err: any) {
+            console.error(`Error descargando ${filename}:`, err);
+            if (err.response && err.response.data instanceof Blob) {
+                try {
+                    const text = await err.response.data.text();
+                    const json = JSON.parse(text);
+                    alert(`Error: ${json.error || 'Error desconocido'}`);
+                    return;
+                } catch (_) { /* not JSON */ }
+            }
+            alert(err.message || `Error al descargar ${filename}.`);
         } finally {
-            setDownloading(false);
+            setLoading(false);
         }
     };
+
+    const handleDownloadPDF = () =>
+        downloadBlob(`/reports/${id}/pdf`, `assessment-report-${id}.pdf`, 'application/pdf', setDownloading);
+    const handleDownloadCSV = () =>
+        downloadBlob(`/reports/${id}/csv`, `assessment-export-${id}.csv`, 'text/csv', setExportingCSV);
+    const handleDownloadJSON = () =>
+        downloadBlob(`/reports/${id}/json`, `assessment-data-${id}.json`, 'application/json', setExportingJSON);
 
     if (loading) {
         return (
@@ -97,6 +133,26 @@ export default function ResultsPage() {
                         </>
                     )}
                 </button>
+
+                {/* Export Buttons */}
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={handleDownloadCSV}
+                        disabled={exportingCSV}
+                        className="btn-secondary flex items-center gap-2 text-sm"
+                    >
+                        <span>📊</span>
+                        <span>{exportingCSV ? 'Exportando...' : 'CSV'}</span>
+                    </button>
+                    <button
+                        onClick={handleDownloadJSON}
+                        disabled={exportingJSON}
+                        className="btn-secondary flex items-center gap-2 text-sm"
+                    >
+                        <span>💾</span>
+                        <span>{exportingJSON ? 'Exportando...' : 'JSON'}</span>
+                    </button>
+                </div>
             </div>
 
             {/* Score Summary */}

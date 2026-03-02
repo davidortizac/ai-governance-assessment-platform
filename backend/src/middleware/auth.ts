@@ -13,7 +13,10 @@ export interface AuthRequest extends Request {
     user?: AuthPayload;
 }
 
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret';
+if (!process.env.JWT_SECRET) {
+    throw new Error('JWT_SECRET env var is required — set it in .env');
+}
+export const JWT_SECRET = process.env.JWT_SECRET;
 
 export function authenticate(req: AuthRequest, res: Response, next: NextFunction): void {
     const authHeader = req.headers.authorization;

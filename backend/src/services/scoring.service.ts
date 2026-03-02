@@ -1,5 +1,6 @@
 import prisma from '../lib/prisma';
 import { RiskLevel } from '@prisma/client';
+import { generateLLMAnalysis } from './llm.service';
 
 interface PillarScoreResult {
     pillarId: string;
@@ -110,12 +111,39 @@ export async function calculateAssessmentScores(assessmentId: string) {
         },
     });
 
+    // LLM Analysis — fire-and-forget so scoring returns immediately.
+    // The PDF endpoint will await the analysis synchronously when the user downloads.
+    setImmediate(() => {
+        prisma.assessment.findUnique({
+            where: { id: assessmentId },
+            include: {
+                client: true,
+                pillarScores: { include: { pillar: true }, orderBy: { pillar: { order: 'asc' } } },
+                answers: { include: { question: { include: { pillar: true } } } },
+            },
+        }).then(full => {
+            if (!full) return;
+            return generateLLMAnalysis(full).then(llmAnalysis =>
+                prisma.assessment.update({
+                    where: { id: assessmentId },
+                    data: { llmAnalysis: llmAnalysis as any },
+                })
+            );
+        }).then(() => {
+            console.log(`[LLM] Background analysis saved for assessment ${assessmentId}`);
+        }).catch(err => {
+            console.error('[LLM] Background analysis failed:', err);
+        });
+    });
+    const llmAnalysisGenerated = false; // Will be generated asynchronously
+
     return {
         overallScore,
         maturityLevel,
         maturityLabel: getMaturityLabel(maturityLevel),
         riskLevel,
         pillarScores: pillarScoreResults,
+        llmAnalysisGenerated,
     };
 }
 

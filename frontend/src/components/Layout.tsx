@@ -2,15 +2,19 @@ import React, { useState } from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
-const navItems = [
-    { path: '/', label: 'Dashboard', icon: '📊' },
-    { path: '/clients', label: 'Clientes', icon: '🏢' },
-    { path: '/assessments', label: 'Evaluaciones', icon: '📋' },
-    { path: '/compare', label: 'Comparar', icon: '🔄' },
+const NAV_ALL = [
+    { path: '/',            label: 'Dashboard',    icon: '📊', roles: ['ADMIN','CONSULTANT','CLIENT'] },
+    { path: '/clients',     label: 'Clientes',     icon: '🏢', roles: ['ADMIN','CONSULTANT'] },
+    { path: '/assessments', label: 'Evaluaciones', icon: '📋', roles: ['ADMIN','CONSULTANT','CLIENT'] },
+    { path: '/compare',     label: 'Comparar',     icon: '🔄', roles: ['ADMIN','CONSULTANT'] },
+    { path: '/integrations',label: 'Integraciones',icon: '🔌', roles: ['ADMIN'] },
+    { path: '/analytics',   label: 'Analítica',    icon: '📈', roles: ['ADMIN','CONSULTANT'] },
+    { path: '/admin',       label: 'Panel Admin',  icon: '🗄️', roles: ['ADMIN'] },
 ];
 
 export default function Layout() {
     const { user, logout } = useAuth();
+    const navItems = NAV_ALL.filter(item => item.roles.includes(user?.role ?? ''));
     const navigate = useNavigate();
     const [sidebarOpen, setSidebarOpen] = useState(false);
 
