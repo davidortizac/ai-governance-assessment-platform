@@ -103,6 +103,8 @@ model Assessment {
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
 
+  llmAnalysis  Json?         // LLM-generated contextual analysis (stored for analytics)
+
   answers      Answer[]
   pillarScores PillarScore[]
 

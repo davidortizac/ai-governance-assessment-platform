@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { authenticate, AuthRequest, AuthPayload } from '../middleware/auth';
 import { generatePDFReport } from '../services/pdf.service';
+import { generateLLMAnalysis } from '../services/llm.service';
 import prisma from '../lib/prisma';
 
 export const reportRouter = Router();
@@ -8,7 +9,6 @@ export const reportRouter = Router();
 reportRouter.use(authenticate as any);
 
 // Helper: verify the caller has access to the requested assessment's reports.
-// Returns true if authorized, false otherwise (response already sent).
 async function assertReportAccess(
     assessmentId: string,
     user: AuthPayload,
@@ -34,18 +34,108 @@ async function assertReportAccess(
 // GET /api/reports/:assessmentId/pdf
 reportRouter.get('/:assessmentId/pdf', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-        const allowed = await assertReportAccess(req.params.assessmentId, req.user!, res);
+        const { assessmentId } = req.params;
+        const allowed = await assertReportAccess(assessmentId, req.user!, res);
         if (!allowed) return;
 
-        const pdfBuffer = await generatePDFReport(req.params.assessmentId);
+        // If LLM analysis is missing, kick it off in the background (fire-and-forget).
+        // The PDF is generated immediately with fallback text; a subsequent download
+        // will include the full analysis once the model finishes.
+        const current = await prisma.assessment.findUnique({
+            where: { id: assessmentId },
+            select: { status: true, llmAnalysis: true },
+        });
+
+        if (current?.status === 'COMPLETED' && !current?.llmAnalysis) {
+            prisma.assessment.findUnique({
+                where: { id: assessmentId },
+                include: {
+                    client: true,
+                    pillarScores: { include: { pillar: true }, orderBy: { pillar: { order: 'asc' } } },
+                    answers: { include: { question: { include: { pillar: true } } } },
+                },
+            }).then(full => {
+                if (!full) return;
+                return generateLLMAnalysis(full).then(llmAnalysis =>
+                    prisma.assessment.update({
+                        where: { id: assessmentId },
+                        data: { llmAnalysis: llmAnalysis as any },
+                    })
+                );
+            }).then(() => {
+                console.log(`[LLM] Background analysis ready for assessment ${assessmentId}`);
+            }).catch(err => {
+                console.error('[LLM] Background analysis failed:', err);
+            });
+        }
+
+        const meta = await prisma.assessment.findUnique({
+            where: { id: assessmentId },
+            select: { type: true, completedAt: true, createdAt: true, client: { select: { name: true } } },
+        });
+
+        const pdfBuffer = await generatePDFReport(assessmentId);
+
+        const clientName = (meta?.client.name ?? 'Cliente')
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // strip accents
+            .replace(/[^a-zA-Z0-9]/g, '_')                   // non-alphanumeric → _
+            .replace(/_+/g, '_')                              // collapse multiple _
+            .replace(/^_|_$/g, '');                           // trim leading/trailing _
+
+        const date = meta?.completedAt ?? meta?.createdAt ?? new Date();
+        const dd   = String(date.getDate()).padStart(2, '0');
+        const mm   = String(date.getMonth() + 1).padStart(2, '0');
+        const aaaa = date.getFullYear();
+
+        const filename = `Assement_CSIA_${clientName}_${meta?.type ?? 'EXPRESS'}_${dd}-${mm}-${aaaa}.pdf`;
 
         res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `attachment; filename=assessment-report-${req.params.assessmentId}.pdf`);
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
         res.setHeader('Content-Length', pdfBuffer.length);
         res.send(pdfBuffer);
     } catch (error) {
         console.error('PDF generation error:', error);
         res.status(500).json({ error: 'Error al generar reporte PDF' });
+    }
+});
+
+// POST /api/reports/:assessmentId/regenerate-analysis
+// Force re-generation of the LLM analysis for an existing COMPLETED assessment.
+reportRouter.post('/:assessmentId/regenerate-analysis', async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const { assessmentId } = req.params;
+        const allowed = await assertReportAccess(assessmentId, req.user!, res);
+        if (!allowed) return;
+
+        const assessment = await prisma.assessment.findUnique({
+            where: { id: assessmentId },
+            include: {
+                client: true,
+                pillarScores: { include: { pillar: true }, orderBy: { pillar: { order: 'asc' } } },
+                answers: { include: { question: { include: { pillar: true } } } },
+            },
+        });
+
+        if (!assessment) {
+            res.status(404).json({ error: 'Evaluación no encontrada' });
+            return;
+        }
+
+        if (assessment.status !== 'COMPLETED') {
+            res.status(400).json({ error: 'El assessment debe estar completado para regenerar el análisis' });
+            return;
+        }
+
+        const llmAnalysis = await generateLLMAnalysis(assessment);
+        await prisma.assessment.update({
+            where: { id: assessmentId },
+            data: { llmAnalysis: llmAnalysis as any },
+        });
+
+        res.json({ success: true, model: llmAnalysis.model, generatedAt: llmAnalysis.generatedAt });
+    } catch (error) {
+        console.error('LLM regeneration error:', error);
+        res.status(500).json({ error: 'Error al regenerar análisis LLM', details: (error as Error).message });
     }
 });
 
@@ -88,7 +178,6 @@ reportRouter.get('/:assessmentId/csv', async (req: AuthRequest, res: Response): 
             },
         });
 
-        // Generate CSV content
         let csv = 'Categoria,Pregunta,Respuesta,Puntaje\n';
 
         assessment!.answers.forEach(a => {
