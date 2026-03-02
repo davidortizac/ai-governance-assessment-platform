@@ -9,6 +9,7 @@ import { reportRouter } from './routes/report.routes';
 import { dashboardRouter } from './routes/dashboard.routes';
 import { integrationsRouter } from './routes/integrations.routes';
 import { analyticsRouter } from './routes/analytics.routes';
+import { adminRouter } from './routes/admin.routes';
 
 dotenv.config();
 
@@ -47,6 +48,7 @@ app.use('/api/reports', reportRouter);
 app.use('/api/dashboard', dashboardRouter);
 app.use('/api/integrations', integrationsRouter);
 app.use('/api/analytics', analyticsRouter);
+app.use('/api/admin', adminRouter);
 
 app.listen(PORT, () => {
     console.log(`🚀 Backend running on http://localhost:${PORT}`);
