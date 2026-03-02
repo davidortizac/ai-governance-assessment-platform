@@ -29,6 +29,7 @@ export default function NewAssessmentPage() {
     const [answers, setAnswers] = useState<Map<string, AnswerData>>(new Map());
     const [currentPillar, setCurrentPillar] = useState(0);
     const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
     // Load clients
     useEffect(() => {
@@ -73,13 +74,16 @@ export default function NewAssessmentPage() {
     const handleCreateAssessment = async () => {
         if (!selectedClient) return;
         setLoading(true);
+        setError(null);
         try {
             const res = await api.post('/assessments', { clientId: selectedClient, type: assessmentType });
             setAssessmentId(res.data.assessment.id);
             setQuestions(res.data.questions);
             setStep('questions');
-        } catch (err) {
+        } catch (err: any) {
             console.error(err);
+            const msg = err?.response?.data?.error || err?.message || 'Error al crear la evaluación';
+            setError(msg);
         } finally {
             setLoading(false);
         }
@@ -144,8 +148,8 @@ export default function NewAssessmentPage() {
                             <button
                                 onClick={() => setAssessmentType('EXPRESS')}
                                 className={`p-4 rounded-xl border-2 transition-all ${assessmentType === 'EXPRESS'
-                                        ? 'border-primary-500 bg-primary-500/10'
-                                        : 'border-surface-700 hover:border-surface-600'
+                                    ? 'border-primary-500 bg-primary-500/10'
+                                    : 'border-surface-700 hover:border-surface-600'
                                     }`}
                             >
                                 <div className="text-2xl mb-2">⚡</div>
@@ -155,8 +159,8 @@ export default function NewAssessmentPage() {
                             <button
                                 onClick={() => setAssessmentType('ADVANCED')}
                                 className={`p-4 rounded-xl border-2 transition-all ${assessmentType === 'ADVANCED'
-                                        ? 'border-primary-500 bg-primary-500/10'
-                                        : 'border-surface-700 hover:border-surface-600'
+                                    ? 'border-primary-500 bg-primary-500/10'
+                                    : 'border-surface-700 hover:border-surface-600'
                                     }`}
                             >
                                 <div className="text-2xl mb-2">🔬</div>
@@ -165,6 +169,12 @@ export default function NewAssessmentPage() {
                             </button>
                         </div>
                     </div>
+
+                    {error && (
+                        <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
+                            ⚠️ {error}
+                        </div>
+                    )}
 
                     <button
                         onClick={handleCreateAssessment}
@@ -225,10 +235,10 @@ export default function NewAssessmentPage() {
                             key={i}
                             onClick={() => setCurrentPillar(i)}
                             className={`shrink-0 px-4 py-2 rounded-lg text-xs font-medium transition-all ${currentPillar === i
-                                    ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30'
-                                    : isComplete
-                                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                                        : 'bg-surface-800/50 text-surface-400 border border-surface-700/50 hover:border-surface-600'
+                                ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30'
+                                : isComplete
+                                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                    : 'bg-surface-800/50 text-surface-400 border border-surface-700/50 hover:border-surface-600'
                                 }`}
                         >
                             {group.pillar} ({pillarAnswered}/{pillarTotal})
@@ -256,10 +266,10 @@ export default function NewAssessmentPage() {
                                             onClick={() => handleAnswer(q.id, score)}
                                             disabled={isNA}
                                             className={`w-10 h-10 rounded-lg text-sm font-semibold transition-all ${!isNA && currentAnswer?.score === score
-                                                    ? 'bg-primary-500 text-white shadow-lg shadow-primary-500/30'
-                                                    : isNA
-                                                        ? 'bg-surface-800/30 text-surface-600 cursor-not-allowed'
-                                                        : 'bg-surface-800/50 text-surface-400 hover:bg-surface-700/50 hover:text-surface-200 border border-surface-700/50'
+                                                ? 'bg-primary-500 text-white shadow-lg shadow-primary-500/30'
+                                                : isNA
+                                                    ? 'bg-surface-800/30 text-surface-600 cursor-not-allowed'
+                                                    : 'bg-surface-800/50 text-surface-400 hover:bg-surface-700/50 hover:text-surface-200 border border-surface-700/50'
                                                 }`}
                                         >
                                             {score}
@@ -272,8 +282,8 @@ export default function NewAssessmentPage() {
                                     <button
                                         onClick={() => handleAnswer(q.id, 0, !isNA)}
                                         className={`px-3 h-10 rounded-lg text-xs font-medium transition-all ${isNA
-                                                ? 'bg-violet-500/20 text-violet-400 border border-violet-500/30'
-                                                : 'bg-surface-800/50 text-surface-500 border border-surface-700/50 hover:border-surface-600'
+                                            ? 'bg-violet-500/20 text-violet-400 border border-violet-500/30'
+                                            : 'bg-surface-800/50 text-surface-500 border border-surface-700/50 hover:border-surface-600'
                                             }`}
                                     >
                                         N/A

@@ -39,6 +39,14 @@ export default function ResultsPage() {
         setDownloading(true);
         try {
             const res = await api.get(`/reports/${id}/pdf`, { responseType: 'blob' });
+
+            // Check if the response is actually JSON error masked as blob
+            if (res.headers['content-type']?.includes('application/json')) {
+                const text = await res.data.text();
+                const json = JSON.parse(text);
+                throw new Error(json.error || 'Server error');
+            }
+
             const blob = new Blob([res.data], { type: 'application/pdf' });
             const url = window.URL.createObjectURL(blob);
             const link = document.createElement('a');
@@ -52,9 +60,21 @@ export default function ResultsPage() {
                 document.body.removeChild(link);
                 window.URL.revokeObjectURL(url);
             }, 3000);
-        } catch (err) {
+        } catch (err: any) {
             console.error('Error descargando PDF:', err);
-            alert('Error al descargar el reporte PDF');
+
+            // Try to read the blob as text to see if it's a JSON error
+            if (err.response && err.response.data instanceof Blob) {
+                try {
+                    const text = await err.response.data.text();
+                    const json = JSON.parse(text);
+                    alert(`Error: ${json.error || 'Error desconocido al generar PDF'}`);
+                    return;
+                } catch (e) {
+                    // Not JSON
+                }
+            }
+            alert(err.message || 'Error al descargar el reporte PDF. Por favor revise la consola.');
         } finally {
             setDownloading(false);
         }
@@ -97,6 +117,38 @@ export default function ResultsPage() {
                         </>
                     )}
                 </button>
+
+                {/* Direct Download Fallback */}
+                <a
+                    href={`${import.meta.env.VITE_API_URL}/reports/${id}/pdf?token=${localStorage.getItem('token')}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn-ghost text-xs text-surface-500 hover:text-primary-400"
+                >
+                    (Descarga Directa)
+                </a>
+
+                {/* New Export Buttons */}
+                <div className="flex items-center gap-2">
+                    <a
+                        href={`${import.meta.env.VITE_API_URL}/reports/${id}/csv?token=${localStorage.getItem('token')}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="btn-secondary flex items-center gap-2 text-sm"
+                    >
+                        <span>📊</span>
+                        <span>CSV</span>
+                    </a>
+                    <a
+                        href={`${import.meta.env.VITE_API_URL}/reports/${id}/json?token=${localStorage.getItem('token')}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="btn-secondary flex items-center gap-2 text-sm"
+                    >
+                        <span>💾</span>
+                        <span>JSON</span>
+                    </a>
+                </div>
             </div>
 
             {/* Score Summary */}

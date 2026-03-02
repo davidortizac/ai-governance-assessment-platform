@@ -8,7 +8,7 @@ export const assessmentRouter = Router();
 assessmentRouter.use(authenticate as any);
 
 // POST /api/assessments — Create a new assessment
-assessmentRouter.post('/', requireRole('ADMIN', 'CONSULTANT') as any, async (req: AuthRequest, res: Response): Promise<void> => {
+assessmentRouter.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
         const { clientId, type } = req.body;
 
