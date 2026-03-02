@@ -7,6 +7,8 @@ const navItems = [
     { path: '/clients', label: 'Clientes', icon: '🏢' },
     { path: '/assessments', label: 'Evaluaciones', icon: '📋' },
     { path: '/compare', label: 'Comparar', icon: '🔄' },
+    { path: '/integrations', label: 'Integraciones', icon: '🔌' },
+    { path: '/analytics', label: 'Analítica', icon: '📈' },
 ];
 
 export default function Layout() {
