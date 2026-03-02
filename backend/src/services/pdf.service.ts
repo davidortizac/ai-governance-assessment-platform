@@ -533,7 +533,7 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
             doc.rect(MARGIN, by, 3, 28).fill(C.STEEL);
             doc.fontSize(8).fillColor(C.TEXT_MUTED).font(FONT_REG)
                 .text(
-                    `Análisis generado por IA local (${llmData.model}) · ` +
+                    `Análisis generado por GammIA · ` +
                     `${new Date(llmData.generatedAt).toLocaleString('es-ES')} · ` +
                     `Para uso interno exclusivo.`,
                     MARGIN + 10, by + 9,
