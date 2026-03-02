@@ -10,6 +10,9 @@ import AssessmentsPage from './pages/AssessmentsPage';
 import NewAssessmentPage from './pages/NewAssessmentPage';
 import ResultsPage from './pages/ResultsPage';
 import ComparePage from './pages/ComparePage';
+import IntegrationsPage from './pages/IntegrationsPage';
+import AnalyticsPage from './pages/AnalyticsPage';
+import AdminPage from './pages/AdminPage';
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 
@@ -43,6 +46,9 @@ export default function App() {
                             <Route path="assessments/new" element={<NewAssessmentPage />} />
                             <Route path="assessments/:id/results" element={<ResultsPage />} />
                             <Route path="compare" element={<ComparePage />} />
+                            <Route path="integrations" element={<IntegrationsPage />} />
+                            <Route path="analytics" element={<AnalyticsPage />} />
+                            <Route path="admin" element={<AdminPage />} />
                         </Route>
                         <Route path="*" element={<Navigate to="/" />} />
                     </Routes>

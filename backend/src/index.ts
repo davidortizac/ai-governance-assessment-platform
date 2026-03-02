@@ -7,13 +7,31 @@ import { assessmentRouter } from './routes/assessment.routes';
 import { pillarRouter } from './routes/pillar.routes';
 import { reportRouter } from './routes/report.routes';
 import { dashboardRouter } from './routes/dashboard.routes';
+import { integrationsRouter } from './routes/integrations.routes';
+import { analyticsRouter } from './routes/analytics.routes';
+import { adminRouter } from './routes/admin.routes';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-app.use(cors());
+const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') || [
+    'http://localhost:5173',
+    'http://localhost:3000',
+];
+app.use(cors({
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error(`CORS: origin not allowed — ${origin}`));
+        }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+}));
 app.use(express.json());
 
 // Health check
@@ -28,6 +46,9 @@ app.use('/api/assessments', assessmentRouter);
 app.use('/api/pillars', pillarRouter);
 app.use('/api/reports', reportRouter);
 app.use('/api/dashboard', dashboardRouter);
+app.use('/api/integrations', integrationsRouter);
+app.use('/api/analytics', analyticsRouter);
+app.use('/api/admin', adminRouter);
 
 app.listen(PORT, () => {
     console.log(`🚀 Backend running on http://localhost:${PORT}`);

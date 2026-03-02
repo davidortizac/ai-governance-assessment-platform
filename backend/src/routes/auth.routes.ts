@@ -3,11 +3,9 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { OAuth2Client } from 'google-auth-library';
 import prisma from '../lib/prisma';
-import { authenticate, AuthRequest, requireRole } from '../middleware/auth';
+import { authenticate, AuthRequest, requireRole, JWT_SECRET } from '../middleware/auth';
 
 export const authRouter = Router();
-
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 

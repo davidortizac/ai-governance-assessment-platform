@@ -1,14 +1,38 @@
 import { Router, Response } from 'express';
 import prisma from '../lib/prisma';
-import { authenticate, AuthRequest, requireRole } from '../middleware/auth';
+import { authenticate, AuthRequest, AuthPayload } from '../middleware/auth';
 import { calculateAssessmentScores } from '../services/scoring.service';
 
 export const assessmentRouter = Router();
 
 assessmentRouter.use(authenticate as any);
 
+// Helper: fetch assessment and verify the caller has access to it.
+// Returns the assessment (with client) if authorized, null otherwise (response already sent).
+async function assertAssessmentAccess(
+    assessmentId: string,
+    user: AuthPayload,
+    res: Response
+): Promise<any | null> {
+    const assessment = await prisma.assessment.findUnique({
+        where: { id: assessmentId },
+        include: { client: true },
+    });
+    if (!assessment) {
+        res.status(404).json({ error: 'Assessment no encontrado' });
+        return null;
+    }
+    const isAdmin = user.role === 'ADMIN' && assessment.client.tenantId === user.tenantId;
+    const isOwner = assessment.createdById === user.userId;
+    if (!isAdmin && !isOwner) {
+        res.status(403).json({ error: 'Acceso denegado' });
+        return null;
+    }
+    return assessment;
+}
+
 // POST /api/assessments — Create a new assessment
-assessmentRouter.post('/', requireRole('ADMIN', 'CONSULTANT') as any, async (req: AuthRequest, res: Response): Promise<void> => {
+assessmentRouter.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
         const { clientId, type } = req.body;
 
@@ -88,6 +112,10 @@ assessmentRouter.get('/', async (req: AuthRequest, res: Response): Promise<void>
 // GET /api/assessments/:id — Get assessment details
 assessmentRouter.get('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
+        const baseAssessment = await assertAssessmentAccess(req.params.id, req.user!, res);
+        if (!baseAssessment) return;
+
+        // Re-fetch with full relations
         const assessment = await prisma.assessment.findUnique({
             where: { id: req.params.id },
             include: {
@@ -104,16 +132,11 @@ assessmentRouter.get('/:id', async (req: AuthRequest, res: Response): Promise<vo
             },
         });
 
-        if (!assessment) {
-            res.status(404).json({ error: 'Assessment no encontrado' });
-            return;
-        }
-
         // Also get questions if assessment is not completed
         let questions: any[] = [];
-        if (assessment.status !== 'COMPLETED') {
+        if (assessment!.status !== 'COMPLETED') {
             questions = await prisma.question.findMany({
-                where: { assessmentType: assessment.type },
+                where: { assessmentType: assessment!.type },
                 include: { pillar: true },
                 orderBy: [{ pillar: { order: 'asc' } }, { order: 'asc' }],
             });
@@ -129,16 +152,10 @@ assessmentRouter.get('/:id', async (req: AuthRequest, res: Response): Promise<vo
 // POST /api/assessments/:id/answers — Submit answers
 assessmentRouter.post('/:id/answers', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-        const { answers } = req.body; // Array of { questionId, score, notApplicable }
+        const { answers } = req.body;
 
-        const assessment = await prisma.assessment.findUnique({
-            where: { id: req.params.id },
-        });
-
-        if (!assessment) {
-            res.status(404).json({ error: 'Assessment no encontrado' });
-            return;
-        }
+        const assessment = await assertAssessmentAccess(req.params.id, req.user!, res);
+        if (!assessment) return;
 
         // Upsert answers
         for (const answer of answers) {
@@ -178,6 +195,9 @@ assessmentRouter.post('/:id/answers', async (req: AuthRequest, res: Response): P
 // POST /api/assessments/:id/calculate — Calculate scores
 assessmentRouter.post('/:id/calculate', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
+        const assessment = await assertAssessmentAccess(req.params.id, req.user!, res);
+        if (!assessment) return;
+
         const result = await calculateAssessmentScores(req.params.id);
         res.json(result);
     } catch (error) {
@@ -189,6 +209,14 @@ assessmentRouter.post('/:id/calculate', async (req: AuthRequest, res: Response):
 // GET /api/assessments/compare/:id1/:id2 — Compare two assessments
 assessmentRouter.get('/compare/:id1/:id2', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
+        // Verify access to both assessments
+        const [base1, base2] = await Promise.all([
+            assertAssessmentAccess(req.params.id1, req.user!, res),
+            assertAssessmentAccess(req.params.id2, req.user!, res),
+        ]);
+        if (!base1 || !base2) return;
+
+        // Re-fetch with pillar scores
         const [a1, a2] = await Promise.all([
             prisma.assessment.findUnique({
                 where: { id: req.params.id1 },
@@ -206,14 +234,9 @@ assessmentRouter.get('/compare/:id1/:id2', async (req: AuthRequest, res: Respons
             }),
         ]);
 
-        if (!a1 || !a2) {
-            res.status(404).json({ error: 'Assessment no encontrado' });
-            return;
-        }
-
         // Calculate deltas
-        const comparison = a1.pillarScores.map(ps1 => {
-            const ps2 = a2.pillarScores.find(ps => ps.pillarId === ps1.pillarId);
+        const comparison = a1!.pillarScores.map(ps1 => {
+            const ps2 = a2!.pillarScores.find(ps => ps.pillarId === ps1.pillarId);
             return {
                 pillar: ps1.pillar.name,
                 pillarKey: ps1.pillar.key,
@@ -227,7 +250,7 @@ assessmentRouter.get('/compare/:id1/:id2', async (req: AuthRequest, res: Respons
             assessmentA: a1,
             assessmentB: a2,
             comparison,
-            overallDelta: Math.round(((a2.overallScore ?? 0) - (a1.overallScore ?? 0)) * 100) / 100,
+            overallDelta: Math.round(((a2!.overallScore ?? 0) - (a1!.overallScore ?? 0)) * 100) / 100,
         });
     } catch (error) {
         console.error('Compare error:', error);
