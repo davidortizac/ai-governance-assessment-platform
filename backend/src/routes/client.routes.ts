@@ -1,11 +1,32 @@
 import { Router, Response } from 'express';
 import prisma from '../lib/prisma';
-import { authenticate, AuthRequest, requireRole } from '../middleware/auth';
+import { authenticate, AuthRequest, AuthPayload, requireRole } from '../middleware/auth';
 
 export const clientRouter = Router();
 
 // All routes require authentication
 clientRouter.use(authenticate as any);
+
+// Helper: fetch client and verify the caller has access to it.
+// Returns the client if authorized, null otherwise (response already sent).
+async function assertClientAccess(
+    clientId: string,
+    user: AuthPayload,
+    res: Response
+): Promise<any | null> {
+    const client = await prisma.client.findUnique({ where: { id: clientId } });
+    if (!client) {
+        res.status(404).json({ error: 'Cliente no encontrado' });
+        return null;
+    }
+    const isAdmin = user.role === 'ADMIN' && client.tenantId === user.tenantId;
+    const isOwner = client.createdById === user.userId;
+    if (!isAdmin && !isOwner) {
+        res.status(403).json({ error: 'Acceso denegado' });
+        return null;
+    }
+    return client;
+}
 
 // GET /api/clients
 clientRouter.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
@@ -53,6 +74,9 @@ clientRouter.get('/', async (req: AuthRequest, res: Response): Promise<void> => 
 // GET /api/clients/:id
 clientRouter.get('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
+        const baseClient = await assertClientAccess(req.params.id, req.user!, res);
+        if (!baseClient) return;
+
         const client = await prisma.client.findUnique({
             where: { id: req.params.id },
             include: {
@@ -65,10 +89,6 @@ clientRouter.get('/:id', async (req: AuthRequest, res: Response): Promise<void> 
                 },
             },
         });
-        if (!client) {
-            res.status(404).json({ error: 'Cliente no encontrado' });
-            return;
-        }
         res.json(client);
     } catch (error) {
         console.error('Get client error:', error);
@@ -100,6 +120,9 @@ clientRouter.post('/', async (req: AuthRequest, res: Response): Promise<void> =>
 // PUT /api/clients/:id
 clientRouter.put('/:id', requireRole('ADMIN', 'CONSULTANT') as any, async (req: AuthRequest, res: Response): Promise<void> => {
     try {
+        const baseClient = await assertClientAccess(req.params.id, req.user!, res);
+        if (!baseClient) return;
+
         const { name, industry, contactEmail, contactName } = req.body;
         const client = await prisma.client.update({
             where: { id: req.params.id },

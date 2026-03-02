@@ -34,51 +34,60 @@ export default function ResultsPage() {
     }, [id]);
 
     const [downloading, setDownloading] = useState(false);
+    const [exportingCSV, setExportingCSV] = useState(false);
+    const [exportingJSON, setExportingJSON] = useState(false);
 
-    const handleDownloadPDF = async () => {
-        setDownloading(true);
+    // Generic blob downloader — uses Authorization header, never exposes token in URL
+    const downloadBlob = async (
+        endpoint: string,
+        filename: string,
+        mimeType: string,
+        setLoading: (v: boolean) => void
+    ) => {
+        setLoading(true);
         try {
-            const res = await api.get(`/reports/${id}/pdf`, { responseType: 'blob' });
+            const res = await api.get(endpoint, { responseType: 'blob' });
 
-            // Check if the response is actually JSON error masked as blob
             if (res.headers['content-type']?.includes('application/json')) {
-                const text = await res.data.text();
+                const text = await (res.data as Blob).text();
                 const json = JSON.parse(text);
                 throw new Error(json.error || 'Server error');
             }
 
-            const blob = new Blob([res.data], { type: 'application/pdf' });
+            const blob = new Blob([res.data], { type: mimeType });
             const url = window.URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
-            link.download = `assessment-report-${id}.pdf`;
+            link.download = filename;
             link.style.display = 'none';
             document.body.appendChild(link);
             link.click();
-            // Delay cleanup so the browser can start the download
             setTimeout(() => {
                 document.body.removeChild(link);
                 window.URL.revokeObjectURL(url);
             }, 3000);
         } catch (err: any) {
-            console.error('Error descargando PDF:', err);
-
-            // Try to read the blob as text to see if it's a JSON error
+            console.error(`Error descargando ${filename}:`, err);
             if (err.response && err.response.data instanceof Blob) {
                 try {
                     const text = await err.response.data.text();
                     const json = JSON.parse(text);
-                    alert(`Error: ${json.error || 'Error desconocido al generar PDF'}`);
+                    alert(`Error: ${json.error || 'Error desconocido'}`);
                     return;
-                } catch (e) {
-                    // Not JSON
-                }
+                } catch (_) { /* not JSON */ }
             }
-            alert(err.message || 'Error al descargar el reporte PDF. Por favor revise la consola.');
+            alert(err.message || `Error al descargar ${filename}.`);
         } finally {
-            setDownloading(false);
+            setLoading(false);
         }
     };
+
+    const handleDownloadPDF = () =>
+        downloadBlob(`/reports/${id}/pdf`, `assessment-report-${id}.pdf`, 'application/pdf', setDownloading);
+    const handleDownloadCSV = () =>
+        downloadBlob(`/reports/${id}/csv`, `assessment-export-${id}.csv`, 'text/csv', setExportingCSV);
+    const handleDownloadJSON = () =>
+        downloadBlob(`/reports/${id}/json`, `assessment-data-${id}.json`, 'application/json', setExportingJSON);
 
     if (loading) {
         return (
@@ -118,36 +127,24 @@ export default function ResultsPage() {
                     )}
                 </button>
 
-                {/* Direct Download Fallback */}
-                <a
-                    href={`${import.meta.env.VITE_API_URL}/reports/${id}/pdf?token=${localStorage.getItem('token')}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="btn-ghost text-xs text-surface-500 hover:text-primary-400"
-                >
-                    (Descarga Directa)
-                </a>
-
-                {/* New Export Buttons */}
+                {/* Export Buttons */}
                 <div className="flex items-center gap-2">
-                    <a
-                        href={`${import.meta.env.VITE_API_URL}/reports/${id}/csv?token=${localStorage.getItem('token')}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                    <button
+                        onClick={handleDownloadCSV}
+                        disabled={exportingCSV}
                         className="btn-secondary flex items-center gap-2 text-sm"
                     >
                         <span>📊</span>
-                        <span>CSV</span>
-                    </a>
-                    <a
-                        href={`${import.meta.env.VITE_API_URL}/reports/${id}/json?token=${localStorage.getItem('token')}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                        <span>{exportingCSV ? 'Exportando...' : 'CSV'}</span>
+                    </button>
+                    <button
+                        onClick={handleDownloadJSON}
+                        disabled={exportingJSON}
                         className="btn-secondary flex items-center gap-2 text-sm"
                     >
                         <span>💾</span>
-                        <span>JSON</span>
-                    </a>
+                        <span>{exportingJSON ? 'Exportando...' : 'JSON'}</span>
+                    </button>
                 </div>
             </div>
 
