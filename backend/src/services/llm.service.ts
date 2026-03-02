@@ -115,13 +115,45 @@ function stripThinkTags(raw: string): string {
 }
 
 /**
- * Attempt to repair common LLM JSON issues before parsing.
- * - Trailing commas before } or ]
- * - Extra text / markdown after the closing }
+ * Walk through JSON and escape literal control characters (LF, CR, TAB, etc.)
+ * found inside string values.  Models like ministral-3b output raw newlines
+ * inside strings, which is invalid per JSON spec (must be \\n).
+ */
+function escapeControlCharsInStrings(s: string): string {
+    let result = '';
+    let inString = false;
+    let escape = false;
+
+    for (let i = 0; i < s.length; i++) {
+        const c = s[i];
+        const code = s.charCodeAt(i);
+
+        if (escape) { result += c; escape = false; continue; }
+        if (c === '\\' && inString) { escape = true; result += c; continue; }
+        if (c === '"') { inString = !inString; result += c; continue; }
+
+        if (inString && code < 0x20) {
+            if (code === 0x0A) { result += '\\n'; continue; }   // LF → \n
+            if (code === 0x0D) { result += '\\r'; continue; }   // CR → \r
+            if (code === 0x09) { result += '\\t'; continue; }   // TAB → \t
+            result += `\\u${code.toString(16).padStart(4, '0')}`;
+            continue;
+        }
+
+        result += c;
+    }
+    return result;
+}
+
+/**
+ * Attempt to repair common LLM JSON issues before parsing:
+ * 1. Literal control characters (newlines/tabs) inside string values
+ * 2. Trailing commas before } or ]
  */
 function repairJson(raw: string): string {
-    // Remove trailing commas before ] or }
-    return raw.replace(/,(\s*[}\]])/g, '$1');
+    let s = escapeControlCharsInStrings(raw);
+    s = s.replace(/,(\s*[}\]])/g, '$1');
+    return s;
 }
 
 /**
@@ -283,7 +315,10 @@ export async function generateLLMAnalysis(assessment: any): Promise<LLMAnalysis>
                 role: 'system',
                 content:
                     'Eres un experto consultor en ciberseguridad de inteligencia artificial. ' +
-                    'Responde ÚNICAMENTE con JSON válido, sin markdown ni texto adicional. ' +
+                    'Responde ÚNICAMENTE con un objeto JSON válido, sin bloques de código, sin markdown, sin texto antes o después del JSON. ' +
+                    'CRÍTICO: todos los valores de string deben estar en una sola línea, sin saltos de línea literales dentro de los strings. ' +
+                    'Usa \\n (barra+n) si necesitas separar párrafos dentro de un string. ' +
+                    'No uses asteriscos, almohadillas ni ningún formato markdown dentro de los valores. ' +
                     'No menciones productos de vendors específicos en tus recomendaciones.',
             },
             { role: 'user', content: prompt },
