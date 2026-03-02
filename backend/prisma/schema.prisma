@@ -34,6 +34,11 @@ enum RiskLevel {
   LATENT
 }
 
+enum IntegrationType {
+  JIRA
+  SLACK
+}
+
 model User {
   id        String   @id @default(uuid())
   email     String   @unique
@@ -60,6 +65,7 @@ model Tenant {
 
   users   User[]
   clients Client[]
+  integrations Integration[]
 
   @@map("tenants")
 }
@@ -155,4 +161,18 @@ model PillarScore {
 
   @@unique([assessmentId, pillarId])
   @@map("pillar_scores")
+}
+
+model Integration {
+  id        String          @id @default(uuid())
+  tenantId  String
+  tenant    Tenant          @relation(fields: [tenantId], references: [id])
+  type      IntegrationType
+  config    Json            @default("{}") // Stores API keys, webhooks, etc.
+  isActive  Boolean         @default(true)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  @@unique([tenantId, type])
+  @@map("integrations")
 }
