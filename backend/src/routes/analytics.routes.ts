@@ -48,6 +48,49 @@ analyticsRouter.get('/risk-trends', async (req: AuthRequest, res: Response): Pro
     }
 });
 
+// GET /api/analytics/pillar-averages
+// Returns average score per pillar for all completed assessments in scope.
+// Used by the framework benchmark view.
+analyticsRouter.get('/pillar-averages', async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const { tenantId, role, userId } = req.user!;
+        const where: any = { status: 'COMPLETED' };
+
+        if (role === 'ADMIN') {
+            if (tenantId) where.client = { tenantId };
+        } else {
+            where.createdById = userId;
+        }
+
+        const pillarScores = await prisma.pillarScore.findMany({
+            where: { assessment: where },
+            include: { pillar: true },
+        });
+
+        const agg: Record<string, { name: string; key: string; total: number; count: number; order: number }> = {};
+        for (const ps of pillarScores) {
+            const k = ps.pillar.key;
+            if (!agg[k]) agg[k] = { name: ps.pillar.name, key: k, total: 0, count: 0, order: ps.pillar.order };
+            agg[k].total += ps.score;
+            agg[k].count += 1;
+        }
+
+        const result = Object.values(agg)
+            .sort((a, b) => a.order - b.order)
+            .map(p => ({
+                key: p.key,
+                name: p.name,
+                avgScore: p.count > 0 ? Math.round((p.total / p.count) * 100) / 100 : 0,
+                assessmentCount: p.count,
+            }));
+
+        res.json(result);
+    } catch (error) {
+        console.error('Pillar averages error:', error);
+        res.status(500).json({ error: 'Error fetching pillar averages' });
+    }
+});
+
 // GET /api/analytics/maturity-gap
 // Compare average maturity per pillar vs "Industry Standard" (mocked for now)
 analyticsRouter.get('/maturity-gap', async (req: AuthRequest, res: Response): Promise<void> => {

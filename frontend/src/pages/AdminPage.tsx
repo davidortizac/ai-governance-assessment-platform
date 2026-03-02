@@ -53,8 +53,18 @@ const ANSWER_LABELS: Record<number, string> = {
     0: 'N/A', 1: 'No iniciado', 3: 'En progreso', 5: 'Completado',
 };
 
+// ─── LLM status type ──────────────────────────────────────────────────────────
+interface LLMStatus {
+    connected: boolean;
+    url: string;
+    currentModel: string;
+    models: { name: string; size?: number }[];
+    error?: string;
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function AdminPage() {
+    const [mainView, setMainView]   = useState<'assessments' | 'llm-config'>('assessments');
     const [rows, setRows]           = useState<AssessmentRow[]>([]);
     const [loading, setLoading]     = useState(true);
     const [detail, setDetail]       = useState<AssessmentDetail | null>(null);
@@ -63,6 +73,12 @@ export default function AdminPage() {
     const [regenerating, setRegenerating] = useState(false);
     const [activeTab, setActiveTab] = useState<'info' | 'answers' | 'results' | 'llm'>('info');
     const [filters, setFilters]     = useState({ search: '', status: '', type: '', risk: '' });
+
+    // LLM config state
+    const [llmStatus, setLlmStatus]     = useState<LLMStatus | null>(null);
+    const [llmTesting, setLlmTesting]   = useState(false);
+    const [llmSaving, setLlmSaving]     = useState(false);
+    const [selectedModel, setSelectedModel] = useState('');
 
     // ── Load list ─────────────────────────────────────────────────────────────
     const loadList = useCallback(() => {
@@ -121,13 +137,55 @@ export default function AdminPage() {
         }
     };
 
+    // ── LLM config ────────────────────────────────────────────────────────────
+    const testLLMConnection = async () => {
+        setLlmTesting(true);
+        try {
+            const r = await api.get('/admin/llm/status');
+            setLlmStatus(r.data);
+            setSelectedModel(r.data.currentModel);
+        } catch {
+            toast.error('Error al verificar conexión con el servidor IA');
+        } finally {
+            setLlmTesting(false);
+        }
+    };
+
+    const saveModel = async () => {
+        if (!selectedModel) return;
+        setLlmSaving(true);
+        try {
+            await api.post('/admin/llm/model', { model: selectedModel });
+            toast.success(`Modelo actualizado: ${selectedModel}`);
+            setLlmStatus(prev => prev ? { ...prev, currentModel: selectedModel } : null);
+        } catch {
+            toast.error('Error al guardar el modelo');
+        } finally {
+            setLlmSaving(false);
+        }
+    };
+
     // ── Download report ───────────────────────────────────────────────────────
-    const downloadReport = (id: string, format: 'pdf' | 'csv' | 'json') => {
-        const url = `${import.meta.env.VITE_API_URL || '/api'}/reports/${id}/${format}`;
-        const link = document.createElement('a');
-        link.href = url;
-        link.target = '_blank';
-        link.click();
+    const downloadReport = async (id: string, format: 'pdf' | 'csv' | 'json') => {
+        const mimeTypes = { pdf: 'application/pdf', csv: 'text/csv', json: 'application/json' };
+        const fallbackNames = { pdf: `report-${id}.pdf`, csv: `export-${id}.csv`, json: `data-${id}.json` };
+        try {
+            const res = await api.get(`/reports/${id}/${format}`, { responseType: 'blob' });
+            const disposition: string = res.headers['content-disposition'] ?? '';
+            const match = disposition.match(/filename="([^"]+)"/);
+            const filename = match ? match[1] : fallbackNames[format];
+            const blob = new Blob([res.data], { type: mimeTypes[format] });
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename;
+            link.style.display = 'none';
+            document.body.appendChild(link);
+            link.click();
+            setTimeout(() => { document.body.removeChild(link); window.URL.revokeObjectURL(url); }, 3000);
+        } catch {
+            toast.error(`Error al descargar ${format.toUpperCase()}`);
+        }
     };
 
     // ── Filtered rows ─────────────────────────────────────────────────────────
@@ -151,18 +209,178 @@ export default function AdminPage() {
                     <div>
                         <h1 className="text-2xl font-bold text-surface-100">Panel de Administración</h1>
                         <p className="text-sm text-surface-400 mt-1">
-                            Gestión completa de evaluaciones, clientes y reportes
+                            Gestión completa de evaluaciones, clientes y configuración IA
                         </p>
                     </div>
                     <div className="flex items-center gap-2">
-                        <span className="text-xs text-surface-500 bg-surface-800 px-3 py-1.5 rounded-lg border border-primary-800/20">
-                            {filtered.length} registro{filtered.length !== 1 ? 's' : ''}
-                        </span>
-                        <button onClick={loadList} className="btn-secondary text-sm flex items-center gap-2">
-                            <span>↺</span> Actualizar
-                        </button>
+                        {mainView === 'assessments' && (
+                            <>
+                                <span className="text-xs text-surface-500 bg-surface-800 px-3 py-1.5 rounded-lg border border-primary-800/20">
+                                    {filtered.length} registro{filtered.length !== 1 ? 's' : ''}
+                                </span>
+                                <button onClick={loadList} className="btn-secondary text-sm flex items-center gap-2">
+                                    <span>↺</span> Actualizar
+                                </button>
+                            </>
+                        )}
                     </div>
                 </div>
+
+                {/* View toggle */}
+                <div className="flex gap-1 mb-5 bg-surface-800/50 p-1 rounded-xl w-fit border border-primary-800/20">
+                    {([
+                        { key: 'assessments', label: 'Evaluaciones', icon: '📋' },
+                        { key: 'llm-config',  label: 'Configuración IA', icon: '🤖' },
+                    ] as const).map(v => (
+                        <button
+                            key={v.key}
+                            onClick={() => { setMainView(v.key); if (v.key === 'llm-config' && !llmStatus) testLLMConnection(); }}
+                            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all
+                                ${mainView === v.key
+                                    ? 'bg-primary-500/15 text-primary-300 border border-primary-500/30 shadow-sm'
+                                    : 'text-surface-400 hover:text-surface-200'
+                                }`}
+                        >
+                            <span>{v.icon}</span>
+                            <span>{v.label}</span>
+                        </button>
+                    ))}
+                </div>
+
+                {/* ── LLM Config view ──────────────────────────────────────── */}
+                {mainView === 'llm-config' && (
+                    <div className="space-y-5 max-w-2xl">
+                        {/* Connection status card */}
+                        <div className="glass-card p-5 space-y-4">
+                            <div className="flex items-center justify-between">
+                                <h2 className="text-base font-semibold text-surface-100 flex items-center gap-2">
+                                    <span>🔌</span> Conexión con servidor IA
+                                </h2>
+                                <button
+                                    onClick={testLLMConnection}
+                                    disabled={llmTesting}
+                                    className="btn-secondary text-sm flex items-center gap-2"
+                                >
+                                    {llmTesting
+                                        ? <><span className="animate-spin inline-block">↺</span> Probando...</>
+                                        : <><span>↺</span> Verificar</>
+                                    }
+                                </button>
+                            </div>
+
+                            {llmStatus ? (
+                                <>
+                                    {/* Status row */}
+                                    <div className="flex items-center gap-3 p-3 rounded-lg bg-surface-800/50 border border-primary-800/20">
+                                        <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${llmStatus.connected ? 'bg-emerald-400 shadow-[0_0_6px_#34d399]' : 'bg-red-400'}`} />
+                                        <div className="flex-1 min-w-0">
+                                            <p className={`text-sm font-medium ${llmStatus.connected ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                {llmStatus.connected ? 'Conectado' : 'Sin conexión'}
+                                            </p>
+                                            <p className="text-xs text-surface-500 font-mono truncate mt-0.5">{llmStatus.url}</p>
+                                        </div>
+                                    </div>
+
+                                    {/* Error */}
+                                    {llmStatus.error && (
+                                        <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-xs text-red-300">
+                                            <span className="font-medium">Error: </span>{llmStatus.error}
+                                        </div>
+                                    )}
+
+                                    {/* Current model */}
+                                    <div>
+                                        <p className="text-xs text-surface-500 uppercase tracking-wider font-medium mb-1">Modelo activo</p>
+                                        <p className="text-sm font-mono text-primary-300 bg-surface-800/50 px-3 py-2 rounded-lg border border-primary-800/20 inline-block">
+                                            {llmStatus.currentModel}
+                                        </p>
+                                    </div>
+                                </>
+                            ) : (
+                                <div className="text-center py-6 text-surface-500 text-sm">
+                                    {llmTesting
+                                        ? 'Verificando conexión...'
+                                        : 'Haz clic en "Verificar" para probar la conexión'
+                                    }
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Model selector */}
+                        {llmStatus && (
+                            <div className="glass-card p-5 space-y-4">
+                                <h2 className="text-base font-semibold text-surface-100 flex items-center gap-2">
+                                    <span>🧠</span> Seleccionar modelo
+                                </h2>
+
+                                {llmStatus.models.length === 0 ? (
+                                    <div className="text-center py-6 text-surface-500 text-sm">
+                                        {llmStatus.connected
+                                            ? 'No se encontraron modelos disponibles en el servidor.'
+                                            : 'Conecta el servidor para ver los modelos disponibles.'}
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className="space-y-2">
+                                            {llmStatus.models.map(m => (
+                                                <label
+                                                    key={m.name}
+                                                    className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all border
+                                                        ${selectedModel === m.name
+                                                            ? 'bg-primary-500/10 border-primary-500/30 text-primary-300'
+                                                            : 'bg-surface-800/30 border-primary-800/20 text-surface-300 hover:bg-surface-800/60'
+                                                        }`}
+                                                >
+                                                    <input
+                                                        type="radio"
+                                                        name="model"
+                                                        value={m.name}
+                                                        checked={selectedModel === m.name}
+                                                        onChange={() => setSelectedModel(m.name)}
+                                                        className="accent-primary-400"
+                                                    />
+                                                    <div className="flex-1 min-w-0">
+                                                        <p className="text-sm font-mono font-medium">{m.name}</p>
+                                                        {m.size && (
+                                                            <p className="text-xs text-surface-500 mt-0.5">
+                                                                {(m.size / 1e9).toFixed(1)} GB
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                    {llmStatus.currentModel === m.name && (
+                                                        <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                                                            activo
+                                                        </span>
+                                                    )}
+                                                </label>
+                                            ))}
+                                        </div>
+
+                                        <button
+                                            onClick={saveModel}
+                                            disabled={llmSaving || !selectedModel || selectedModel === llmStatus.currentModel}
+                                            className="btn-primary text-sm flex items-center gap-2 disabled:opacity-40"
+                                        >
+                                            {llmSaving
+                                                ? <><span className="animate-spin inline-block">↺</span> Guardando...</>
+                                                : <><span>✓</span> Usar este modelo</>
+                                            }
+                                        </button>
+                                    </>
+                                )}
+                            </div>
+                        )}
+
+                        {/* Info note */}
+                        <div className="text-xs text-surface-500 px-1 space-y-1">
+                            <p>• El modelo seleccionado se usa para generar análisis IA al calcular evaluaciones y al regenerar análisis desde el panel de administración.</p>
+                            <p>• El cambio es efectivo inmediatamente y persiste mientras el servidor esté activo. Para hacerlo permanente, actualiza <span className="font-mono text-surface-400">OLLAMA_MODEL</span> en el archivo <span className="font-mono text-surface-400">.env</span>.</p>
+                        </div>
+                    </div>
+                )}
+
+                {/* ── Assessments view ─────────────────────────────────────── */}
+                {mainView === 'assessments' && (<>
 
                 {/* Filters */}
                 <div className="glass-card p-4 mb-4 flex flex-wrap gap-3">
@@ -289,6 +507,7 @@ export default function AdminPage() {
                         </table>
                     )}
                 </div>
+                </>)}
             </div>
 
             {/* ── Right: Detail panel ──────────────────────────────────────── */}

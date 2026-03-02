@@ -111,28 +111,31 @@ export async function calculateAssessmentScores(assessmentId: string) {
         },
     });
 
-    // LLM Analysis — best-effort, non-blocking on failure
-    let llmAnalysisGenerated = false;
-    try {
-        const fullAssessment = await prisma.assessment.findUnique({
+    // LLM Analysis — fire-and-forget so scoring returns immediately.
+    // The PDF endpoint will await the analysis synchronously when the user downloads.
+    setImmediate(() => {
+        prisma.assessment.findUnique({
             where: { id: assessmentId },
             include: {
                 client: true,
                 pillarScores: { include: { pillar: true }, orderBy: { pillar: { order: 'asc' } } },
                 answers: { include: { question: { include: { pillar: true } } } },
             },
+        }).then(full => {
+            if (!full) return;
+            return generateLLMAnalysis(full).then(llmAnalysis =>
+                prisma.assessment.update({
+                    where: { id: assessmentId },
+                    data: { llmAnalysis: llmAnalysis as any },
+                })
+            );
+        }).then(() => {
+            console.log(`[LLM] Background analysis saved for assessment ${assessmentId}`);
+        }).catch(err => {
+            console.error('[LLM] Background analysis failed:', err);
         });
-        if (fullAssessment) {
-            const llmAnalysis = await generateLLMAnalysis(fullAssessment);
-            await prisma.assessment.update({
-                where: { id: assessmentId },
-                data: { llmAnalysis: llmAnalysis as any },
-            });
-            llmAnalysisGenerated = true;
-        }
-    } catch (llmErr) {
-        console.error('[LLM] Analysis failed (non-fatal):', llmErr);
-    }
+    });
+    const llmAnalysisGenerated = false; // Will be generated asynchronously
 
     return {
         overallScore,
