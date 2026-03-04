@@ -123,11 +123,12 @@ adminRouter.get('/llm/status', async (req: AuthRequest, res: Response): Promise<
     if (!requireAdmin(req, res)) return;
     const url = process.env.OLLAMA_URL ?? 'http://host.docker.internal:11434/v1/chat/completions';
     const currentModel = process.env.OLLAMA_MODEL ?? 'deepseek-r1:8b';
+    const hasApiKey = !!(process.env.LLM_API_KEY);
     try {
         const models = await listOllamaModels();
-        res.json({ connected: true, url, currentModel, models });
+        res.json({ connected: true, url, currentModel, models, hasApiKey });
     } catch (err: any) {
-        res.json({ connected: false, url, currentModel, models: [], error: err.message ?? 'Error de conexión' });
+        res.json({ connected: false, url, currentModel, models: [], hasApiKey, error: err.message ?? 'Error de conexión' });
     }
 });
 
@@ -142,6 +143,17 @@ adminRouter.post('/llm/model', (req: AuthRequest, res: Response): void => {
     process.env.OLLAMA_MODEL = model.trim();
     console.log(`[Admin] OLLAMA_MODEL changed to: ${process.env.OLLAMA_MODEL}`);
     res.json({ success: true, model: process.env.OLLAMA_MODEL });
+});
+
+// POST /api/admin/llm/config — Set provider URL, API key and model at runtime (no restart needed)
+adminRouter.post('/llm/config', (req: AuthRequest, res: Response): void => {
+    if (!requireAdmin(req, res)) return;
+    const { url, apiKey, model } = req.body as { url?: string; apiKey?: string; model?: string };
+    if (url && typeof url === 'string' && url.trim()) process.env.OLLAMA_URL = url.trim();
+    if (apiKey !== undefined && typeof apiKey === 'string') process.env.LLM_API_KEY = apiKey.trim();
+    if (model && typeof model === 'string' && model.trim()) process.env.OLLAMA_MODEL = model.trim();
+    console.log(`[Admin] LLM config updated — url: ${process.env.OLLAMA_URL}, model: ${process.env.OLLAMA_MODEL}, apiKey: ${process.env.LLM_API_KEY ? '[set]' : '[empty]'}`);
+    res.json({ success: true, url: process.env.OLLAMA_URL, model: process.env.OLLAMA_MODEL });
 });
 
 // GET /api/admin/clients — All clients for tenant

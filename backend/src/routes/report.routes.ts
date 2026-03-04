@@ -38,9 +38,13 @@ reportRouter.get('/:assessmentId/pdf', async (req: AuthRequest, res: Response): 
         const allowed = await assertReportAccess(assessmentId, req.user!, res);
         if (!allowed) return;
 
-        // If LLM analysis is missing, generate it synchronously so the PDF includes it.
-        // The PDF download will block until the model responds (or fails, in which case
-        // the PDF uses the fallback text).
+        // If LLM analysis is missing, try on-demand before generating the PDF.
+        // Use the configured OLLAMA_TIMEOUT_MS capped at 330s (safely under nginx's 380s limit).
+        // NOTE: 45s was too short for local Ollama models (deepseek-r1 needs 2-3 min cold start).
+        const ON_DEMAND_TIMEOUT_MS = Math.min(
+            parseInt(process.env.OLLAMA_TIMEOUT_MS ?? '300000', 10),
+            330_000
+        );
         const current = await prisma.assessment.findUnique({
             where: { id: assessmentId },
             select: { status: true, llmAnalysis: true },
@@ -48,7 +52,7 @@ reportRouter.get('/:assessmentId/pdf', async (req: AuthRequest, res: Response): 
 
         if (current?.status === 'COMPLETED' && !current?.llmAnalysis) {
             try {
-                console.log(`[LLM] On-demand analysis for PDF — assessment ${assessmentId}`);
+                console.log(`[LLM] On-demand analysis for PDF (timeout=${ON_DEMAND_TIMEOUT_MS}ms) — assessment ${assessmentId}`);
                 const full = await prisma.assessment.findUnique({
                     where: { id: assessmentId },
                     include: {
@@ -58,7 +62,7 @@ reportRouter.get('/:assessmentId/pdf', async (req: AuthRequest, res: Response): 
                     },
                 });
                 if (full) {
-                    const llmAnalysis = await generateLLMAnalysis(full);
+                    const llmAnalysis = await generateLLMAnalysis(full, ON_DEMAND_TIMEOUT_MS);
                     await prisma.assessment.update({
                         where: { id: assessmentId },
                         data: { llmAnalysis: llmAnalysis as any },
@@ -66,7 +70,8 @@ reportRouter.get('/:assessmentId/pdf', async (req: AuthRequest, res: Response): 
                     console.log(`[LLM] On-demand analysis saved for assessment ${assessmentId}`);
                 }
             } catch (err) {
-                console.error('[LLM] On-demand analysis failed (PDF will use fallback):', err);
+                // Ollama unavailable or timed out — PDF will use fallback text.
+                console.warn('[LLM] On-demand analysis skipped (PDF will use fallback):', (err as Error).message);
             }
         }
 
@@ -100,44 +105,66 @@ reportRouter.get('/:assessmentId/pdf', async (req: AuthRequest, res: Response): 
     }
 });
 
+// In-memory set tracking assessments currently being regenerated
+const regeneratingIds = new Set<string>();
+
 // POST /api/reports/:assessmentId/regenerate-analysis
-// Force re-generation of the LLM analysis for an existing COMPLETED assessment.
+// Starts LLM re-generation in the background and returns 202 immediately.
+// Clients should poll GET /api/reports/:assessmentId/regenerate-status.
 reportRouter.post('/:assessmentId/regenerate-analysis', async (req: AuthRequest, res: Response): Promise<void> => {
-    try {
-        const { assessmentId } = req.params;
-        const allowed = await assertReportAccess(assessmentId, req.user!, res);
-        if (!allowed) return;
+    const { assessmentId } = req.params;
+    const allowed = await assertReportAccess(assessmentId, req.user!, res);
+    if (!allowed) return;
 
-        const assessment = await prisma.assessment.findUnique({
-            where: { id: assessmentId },
-            include: {
-                client: true,
-                pillarScores: { include: { pillar: true }, orderBy: { pillar: { order: 'asc' } } },
-                answers: { include: { question: { include: { pillar: true } } } },
-            },
-        });
-
-        if (!assessment) {
-            res.status(404).json({ error: 'Evaluación no encontrada' });
-            return;
-        }
-
-        if (assessment.status !== 'COMPLETED') {
-            res.status(400).json({ error: 'El assessment debe estar completado para regenerar el análisis' });
-            return;
-        }
-
-        const llmAnalysis = await generateLLMAnalysis(assessment);
-        await prisma.assessment.update({
-            where: { id: assessmentId },
-            data: { llmAnalysis: llmAnalysis as any },
-        });
-
-        res.json({ success: true, model: llmAnalysis.model, generatedAt: llmAnalysis.generatedAt });
-    } catch (error) {
-        console.error('LLM regeneration error:', error);
-        res.status(500).json({ error: 'Error al regenerar análisis LLM', details: (error as Error).message });
+    if (regeneratingIds.has(assessmentId)) {
+        res.status(202).json({ status: 'processing', message: 'Análisis en progreso, espera un momento.' });
+        return;
     }
+
+    const assessment = await prisma.assessment.findUnique({
+        where: { id: assessmentId },
+        include: {
+            client: true,
+            pillarScores: { include: { pillar: true }, orderBy: { pillar: { order: 'asc' } } },
+            answers: { include: { question: { include: { pillar: true } } } },
+        },
+    });
+
+    if (!assessment) { res.status(404).json({ error: 'Evaluación no encontrada' }); return; }
+    if (assessment.status !== 'COMPLETED') {
+        res.status(400).json({ error: 'El assessment debe estar completado para regenerar el análisis' });
+        return;
+    }
+
+    // Kick off background processing — do NOT await
+    regeneratingIds.add(assessmentId);
+    generateLLMAnalysis(assessment)
+        .then(async (llmAnalysis) => {
+            await prisma.assessment.update({ where: { id: assessmentId }, data: { llmAnalysis: llmAnalysis as any } });
+            console.log(`[LLM] Background regeneration complete for ${assessmentId}`);
+        })
+        .catch((err) => console.error(`[LLM] Background regeneration failed for ${assessmentId}:`, err))
+        .finally(() => regeneratingIds.delete(assessmentId));
+
+    res.status(202).json({ status: 'processing', message: 'Análisis iniciado. Consulta el estado en unos minutos.' });
+});
+
+// GET /api/reports/:assessmentId/regenerate-status
+// Returns whether a background regeneration is in progress or complete.
+reportRouter.get('/:assessmentId/regenerate-status', async (req: AuthRequest, res: Response): Promise<void> => {
+    const { assessmentId } = req.params;
+    const allowed = await assertReportAccess(assessmentId, req.user!, res);
+    if (!allowed) return;
+
+    if (regeneratingIds.has(assessmentId)) {
+        res.json({ status: 'processing' });
+        return;
+    }
+    const record = await prisma.assessment.findUnique({
+        where: { id: assessmentId },
+        select: { llmAnalysis: true },
+    });
+    res.json({ status: 'done', hasAnalysis: !!record?.llmAnalysis });
 });
 
 // GET /api/reports/:assessmentId/json

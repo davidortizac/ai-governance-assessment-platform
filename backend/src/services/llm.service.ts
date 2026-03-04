@@ -1,9 +1,12 @@
 /**
- * llm.service.ts — Ollama local LLM integration for contextual AI security assessment analysis.
- * Uses deepseek-r1:8b or qwen2.5:27b to generate vendor-neutral, data-driven reports.
+ * llm.service.ts — LLM integration for contextual AI security assessment analysis.
  *
- * Uses Node's native http/https modules instead of fetch to control connect + socket
- * timeouts independently of undici's internal 10s default.
+ * Supports two providers via the same OpenAI-compatible chat completions format:
+ *   1. Ollama (local)  — set OLLAMA_URL to http://host.docker.internal:11434/v1/chat/completions
+ *   2. Google AI Studio — set OLLAMA_URL to https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+ *                          and LLM_API_KEY to your Google AI Studio key
+ *
+ * Uses Node's native http/https modules to control connect + socket timeouts independently.
  */
 
 import https from 'https';
@@ -13,10 +16,13 @@ import http from 'http';
 const getOllamaUrl     = () => process.env.OLLAMA_URL      ?? 'http://host.docker.internal:11434/v1/chat/completions';
 const getOllamaModel   = () => process.env.OLLAMA_MODEL    ?? 'deepseek-r1:8b';
 const getOllamaTimeout = () => parseInt(process.env.OLLAMA_TIMEOUT_MS ?? '300000', 10);
+// Optional API key — required for Google AI Studio, leave empty for Ollama
+const getLlmApiKey     = () => process.env.LLM_API_KEY     ?? '';
 
 /**
  * POST JSON to a URL using Node's native http/https.
  * Applies OLLAMA_TIMEOUT_MS to both connect and idle phases.
+ * Adds Authorization header when LLM_API_KEY is set (required for Google AI Studio).
  */
 function httpPost(url: string, body: string, timeoutMs: number): Promise<{ status: number; body: string }> {
     return new Promise((resolve, reject) => {
@@ -25,6 +31,7 @@ function httpPost(url: string, body: string, timeoutMs: number): Promise<{ statu
         const lib      = isHttps ? https : http;
         const port     = parsed.port ? parseInt(parsed.port, 10) : (isHttps ? 443 : 80);
 
+        const apiKey = getLlmApiKey();
         const options: https.RequestOptions = {
             hostname: parsed.hostname,
             port,
@@ -33,6 +40,7 @@ function httpPost(url: string, body: string, timeoutMs: number): Promise<{ statu
             headers: {
                 'Content-Type':   'application/json',
                 'Content-Length': Buffer.byteLength(body),
+                ...(apiKey && { 'Authorization': `Bearer ${apiKey}` }),
             },
             timeout: timeoutMs,          // socket connect + idle timeout
             rejectUnauthorized: false,   // allow self-signed certs on internal servers
@@ -65,12 +73,16 @@ function httpGet(url: string, timeoutMs: number): Promise<{ status: number; body
         const lib     = isHttps ? https : http;
         const port    = parsed.port ? parseInt(parsed.port, 10) : (isHttps ? 443 : 80);
 
+        const apiKey = getLlmApiKey();
         const options: https.RequestOptions = {
             hostname: parsed.hostname,
             port,
             path: parsed.pathname + parsed.search,
             method: 'GET',
-            headers: { 'Accept': 'application/json' },
+            headers: {
+                'Accept': 'application/json',
+                ...(apiKey && { 'Authorization': `Bearer ${apiKey}` }),
+            },
             timeout: timeoutMs,
             rejectUnauthorized: false,
         };
@@ -298,15 +310,21 @@ Responde ÚNICAMENTE con el siguiente JSON válido (sin markdown, sin texto adic
       "recommendation": "<recomendación accionable sin mencionar vendors>"
     }
   }
-}`;
 }
 
-/** Call Ollama API and return structured LLMAnalysis. Throws on failure. */
-export async function generateLLMAnalysis(assessment: any): Promise<LLMAnalysis> {
+RECUERDA: Todos los textos del JSON deben estar escritos en español.`;
+}
+
+/** Call Ollama API and return structured LLMAnalysis. Throws on failure.
+ *  @param timeoutMs - optional override for the request timeout (defaults to OLLAMA_TIMEOUT_MS env var).
+ *                     Use a short value (e.g. 45_000) for on-demand blocking calls so the PDF
+ *                     still returns quickly when Ollama is unavailable or slow.
+ */
+export async function generateLLMAnalysis(assessment: any, timeoutMs?: number): Promise<LLMAnalysis> {
     const prompt = buildPrompt(assessment);
     const ollamaUrl     = getOllamaUrl();
     const ollamaModel   = getOllamaModel();
-    const ollamaTimeout = getOllamaTimeout();
+    const ollamaTimeout = timeoutMs ?? getOllamaTimeout();
 
     const requestBody = JSON.stringify({
         model: ollamaModel,
@@ -315,6 +333,7 @@ export async function generateLLMAnalysis(assessment: any): Promise<LLMAnalysis>
                 role: 'system',
                 content:
                     'Eres un experto consultor en ciberseguridad de inteligencia artificial. ' +
+                    'IMPORTANTE: Responde SIEMPRE en español. Todos los valores del JSON deben estar escritos en español. Nunca respondas en inglés. ' +
                     'Responde ÚNICAMENTE con un objeto JSON válido, sin bloques de código, sin markdown, sin texto antes o después del JSON. ' +
                     'CRÍTICO: todos los valores de string deben estar en una sola línea, sin saltos de línea literales dentro de los strings. ' +
                     'Usa \\n (barra+n) si necesitas separar párrafos dentro de un string. ' +
@@ -325,7 +344,7 @@ export async function generateLLMAnalysis(assessment: any): Promise<LLMAnalysis>
         ],
         temperature: 0.3,
         stream: false,
-        max_tokens: 2500,
+        max_tokens: 8192,   // deepseek-r1 uses tokens for <think> blocks before JSON output
     });
 
     console.log(`[LLM] POST ${ollamaUrl} (model=${ollamaModel}, timeout=${ollamaTimeout}ms)`);
@@ -382,18 +401,20 @@ export async function generateLLMAnalysis(assessment: any): Promise<LLMAnalysis>
 }
 
 /**
- * List available models from the Ollama server.
- * Tries /v1/models (OpenAI-compatible) first, then /api/tags (Ollama native).
+ * List available models from the configured LLM provider.
+ * Tries OpenAI-compatible /models first (works with both Ollama and Google AI Studio),
+ * then Ollama native /api/tags as fallback.
  */
 export async function listOllamaModels(): Promise<{ name: string; size?: number }[]> {
     const chatUrl = getOllamaUrl();
-    // Derive base URL: strip /v1/chat/completions and everything after
-    const base = chatUrl.replace(/\/v1\/chat\/completions.*$/, '').replace(/\/api\/.*$/, '');
+    // Derive base URL by stripping /chat/completions (handles both
+    // Ollama's /v1/chat/completions and Google's /openai/chat/completions)
+    const base = chatUrl.replace(/\/chat\/completions.*$/, '').replace(/\/api\/.*$/, '');
     const timeout = Math.min(getOllamaTimeout(), 15000); // cap at 15s for listing
 
-    // Try OpenAI-compatible /v1/models first
+    // Try OpenAI-compatible /models first (Ollama + Google AI Studio)
     try {
-        const { status, body } = await httpGet(`${base}/v1/models`, timeout);
+        const { status, body } = await httpGet(`${base}/models`, timeout);
         if (status === 200) {
             const data = JSON.parse(body);
             if (Array.isArray(data?.data)) {
@@ -404,8 +425,9 @@ export async function listOllamaModels(): Promise<{ name: string; size?: number 
         // fall through to /api/tags
     }
 
-    // Ollama native /api/tags
-    const { status, body } = await httpGet(`${base}/api/tags`, timeout);
+    // Ollama native /api/tags (fallback for local Ollama without /v1 prefix)
+    const ollamaBase = chatUrl.replace(/\/v1\/chat\/completions.*$/, '');
+    const { status, body } = await httpGet(`${ollamaBase}/api/tags`, timeout);
     if (status !== 200) {
         throw new Error(`Ollama /api/tags returned HTTP ${status}`);
     }

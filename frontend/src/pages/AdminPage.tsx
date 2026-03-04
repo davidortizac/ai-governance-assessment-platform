@@ -59,6 +59,7 @@ interface LLMStatus {
     url: string;
     currentModel: string;
     models: { name: string; size?: number }[];
+    hasApiKey?: boolean;
     error?: string;
 }
 
@@ -79,6 +80,13 @@ export default function AdminPage() {
     const [llmTesting, setLlmTesting]   = useState(false);
     const [llmSaving, setLlmSaving]     = useState(false);
     const [selectedModel, setSelectedModel] = useState('');
+
+    // Provider config form state
+    const [providerType, setProviderType]   = useState<'google' | 'ollama'>('google');
+    const [llmUrl, setLlmUrl]               = useState('');
+    const [llmApiKey, setLlmApiKey]         = useState('');
+    const [showApiKey, setShowApiKey]       = useState(false);
+    const [configSaving, setConfigSaving]   = useState(false);
 
     // ── Load list ─────────────────────────────────────────────────────────────
     const loadList = useCallback(() => {
@@ -128,26 +136,67 @@ export default function AdminPage() {
         setRegenerating(true);
         try {
             await api.post(`/reports/${detail.id}/regenerate-analysis`);
-            toast.success('Análisis regenerado. Recargando...');
-            openDetail(detail.id);
+            toast.success('Análisis iniciado. Esto puede tardar varios minutos con Ollama local...');
+            // Poll every 10s until done (up to 12 min)
+            const maxAttempts = 72;
+            for (let i = 0; i < maxAttempts; i++) {
+                await new Promise(r => setTimeout(r, 10000));
+                const { data } = await api.get(`/reports/${detail.id}/regenerate-status`);
+                if (data.status === 'done') {
+                    toast.success('Análisis regenerado correctamente.');
+                    openDetail(detail.id);
+                    return;
+                }
+            }
+            toast.error('El análisis tardó demasiado. Intenta recargar la página.');
         } catch {
-            toast.error('Error al regenerar análisis');
+            toast.error('Error al iniciar regeneración del análisis');
         } finally {
             setRegenerating(false);
         }
     };
 
     // ── LLM config ────────────────────────────────────────────────────────────
+    const GOOGLE_LLM_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
+    const OLLAMA_LLM_URL = 'http://host.docker.internal:11434/v1/chat/completions';
+
     const testLLMConnection = async () => {
         setLlmTesting(true);
         try {
             const r = await api.get('/admin/llm/status');
             setLlmStatus(r.data);
             setSelectedModel(r.data.currentModel);
+            // Sync provider form from actual backend config
+            const detectedUrl: string = r.data.url ?? '';
+            setLlmUrl(detectedUrl);
+            setProviderType(detectedUrl.includes('googleapis.com') ? 'google' : 'ollama');
         } catch {
             toast.error('Error al verificar conexión con el servidor IA');
         } finally {
             setLlmTesting(false);
+        }
+    };
+
+    const handleProviderChange = (type: 'google' | 'ollama') => {
+        setProviderType(type);
+        setLlmUrl(type === 'google' ? GOOGLE_LLM_URL : OLLAMA_LLM_URL);
+        if (type === 'ollama') setLlmApiKey('');
+    };
+
+    const saveConfig = async () => {
+        setConfigSaving(true);
+        try {
+            await api.post('/admin/llm/config', {
+                url: llmUrl,
+                ...(llmApiKey && { apiKey: llmApiKey }),
+            });
+            toast.success('Configuración guardada. Verificando conexión...');
+            setLlmApiKey('');
+            await testLLMConnection();
+        } catch {
+            toast.error('Error al guardar configuración');
+        } finally {
+            setConfigSaving(false);
         }
     };
 
@@ -250,6 +299,93 @@ export default function AdminPage() {
                 {/* ── LLM Config view ──────────────────────────────────────── */}
                 {mainView === 'llm-config' && (
                     <div className="space-y-5 max-w-2xl">
+
+                        {/* Provider config card */}
+                        <div className="glass-card p-5 space-y-4">
+                            <h2 className="text-base font-semibold text-surface-100 flex items-center gap-2">
+                                <span>⚙️</span> Proveedor de IA
+                            </h2>
+
+                            {/* Provider toggle */}
+                            <div className="flex gap-2">
+                                {(['google', 'ollama'] as const).map(type => (
+                                    <button
+                                        key={type}
+                                        onClick={() => handleProviderChange(type)}
+                                        className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all border
+                                            ${providerType === type
+                                                ? 'bg-primary-500/15 text-primary-300 border-primary-500/30'
+                                                : 'bg-surface-800/30 text-surface-400 border-primary-800/20 hover:bg-surface-800/60'
+                                            }`}
+                                    >
+                                        <span>{type === 'google' ? '☁️' : '🖥️'}</span>
+                                        <span>{type === 'google' ? 'Google AI Studio' : 'Ollama Local'}</span>
+                                    </button>
+                                ))}
+                            </div>
+
+                            {/* URL field */}
+                            <div>
+                                <label className="text-xs text-surface-500 uppercase tracking-wider font-medium block mb-1">
+                                    URL del servidor
+                                </label>
+                                <input
+                                    type="text"
+                                    value={llmUrl}
+                                    onChange={e => setLlmUrl(e.target.value)}
+                                    placeholder={providerType === 'google'
+                                        ? 'https://generativelanguage.googleapis.com/...'
+                                        : 'http://host.docker.internal:11434/v1/chat/completions'}
+                                    className="input-field w-full text-sm font-mono"
+                                />
+                            </div>
+
+                            {/* API Key field — only for Google */}
+                            {providerType === 'google' && (
+                                <div>
+                                    <label className="text-xs text-surface-500 uppercase tracking-wider font-medium block mb-1">
+                                        API Key
+                                    </label>
+                                    <div className="relative">
+                                        <input
+                                            type={showApiKey ? 'text' : 'password'}
+                                            value={llmApiKey}
+                                            onChange={e => setLlmApiKey(e.target.value)}
+                                            placeholder={llmStatus?.hasApiKey
+                                                ? '••••••••••••• (dejar vacío para mantener la actual)'
+                                                : 'Ingresa tu Google AI Studio API key'}
+                                            className="input-field w-full text-sm pr-20"
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowApiKey(v => !v)}
+                                            className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-surface-400 hover:text-surface-200 transition-colors"
+                                        >
+                                            {showApiKey ? 'Ocultar' : 'Mostrar'}
+                                        </button>
+                                    </div>
+                                    {llmStatus?.hasApiKey && (
+                                        <p className="text-xs text-emerald-400 mt-1">✓ API key configurada</p>
+                                    )}
+                                    <p className="text-xs text-surface-500 mt-1">
+                                        Obtén tu key en{' '}
+                                        <span className="text-primary-400 font-mono">aistudio.google.com/apikey</span>
+                                    </p>
+                                </div>
+                            )}
+
+                            <button
+                                onClick={saveConfig}
+                                disabled={configSaving || !llmUrl.trim()}
+                                className="btn-primary text-sm flex items-center gap-2 disabled:opacity-40"
+                            >
+                                {configSaving
+                                    ? <><span className="animate-spin inline-block">↺</span> Guardando...</>
+                                    : <><span>✓</span> Guardar configuración</>
+                                }
+                            </button>
+                        </div>
+
                         {/* Connection status card */}
                         <div className="glass-card p-5 space-y-4">
                             <div className="flex items-center justify-between">
@@ -374,7 +510,7 @@ export default function AdminPage() {
                         {/* Info note */}
                         <div className="text-xs text-surface-500 px-1 space-y-1">
                             <p>• El modelo seleccionado se usa para generar análisis IA al calcular evaluaciones y al regenerar análisis desde el panel de administración.</p>
-                            <p>• El cambio es efectivo inmediatamente y persiste mientras el servidor esté activo. Para hacerlo permanente, actualiza <span className="font-mono text-surface-400">OLLAMA_MODEL</span> en el archivo <span className="font-mono text-surface-400">.env</span>.</p>
+                            <p>• Los cambios de proveedor/modelo son efectivos inmediatamente y persisten mientras el servidor esté activo. Para hacerlos permanentes, actualiza <span className="font-mono text-surface-400">.env</span> y reinicia el contenedor.</p>
                         </div>
                     </div>
                 )}
