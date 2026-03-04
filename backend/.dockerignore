@@ -1,0 +1,10 @@
+node_modules
+dist
+.env
+*.log
+.DS_Store
+coverage
+credentials.txt
+token.txt
+*.pdf
+test_api.js

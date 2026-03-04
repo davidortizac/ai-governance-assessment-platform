@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -13,7 +11,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -29,9 +27,16 @@ services:
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       PORT: "4000"
       NODE_ENV: production
+      # Allow requests from the frontend container (nginx proxies on behalf of browser)
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173}
+      # LLM provider — configurable via .env
+      # Ollama (local):        OLLAMA_URL=http://host.docker.internal:11434/v1/chat/completions
+      # Google AI Studio:      OLLAMA_URL=https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434/v1/chat/completions}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-deepseek-r1:8b}
       OLLAMA_TIMEOUT_MS: ${OLLAMA_TIMEOUT_MS:-300000}
+      # API key — leave empty for Ollama; required for Google AI Studio
+      LLM_API_KEY: ${LLM_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     dns:
@@ -42,6 +47,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 60s
     restart: unless-stopped
 
   frontend:
@@ -49,13 +60,16 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:4000/api}
+        # /api is a relative URL — nginx proxies it to the backend container
+        # Override with VITE_API_URL=http://yourserver.com/api only if NOT using nginx proxy
+        VITE_API_URL: ${VITE_API_URL:-/api}
         VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
     container_name: gamma_assessment_frontend
     ports:
       - "3000:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
