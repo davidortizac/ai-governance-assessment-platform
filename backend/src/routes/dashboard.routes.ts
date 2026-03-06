@@ -6,6 +6,56 @@ export const dashboardRouter = Router();
 
 dashboardRouter.use(authenticate as any);
 
+// GET /api/dashboard/clients
+// Returns all accessible clients with their full assessment history (summary fields only).
+dashboardRouter.get('/clients', async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const { role, tenantId, userId } = req.user!;
+
+        const clientWhere: any = {};
+        const assessmentWhere: any = {};
+
+        if (role === 'ADMIN') {
+            if (tenantId) clientWhere.tenantId = tenantId;
+        } else {
+            // CONSULTANT and CLIENT only see clients/assessments they created
+            clientWhere.createdById = userId;
+            assessmentWhere.createdById = userId;
+        }
+
+        const clients = await prisma.client.findMany({
+            where: clientWhere,
+            select: {
+                id: true,
+                name: true,
+                industry: true,
+                contactEmail: true,
+                contactName: true,
+                assessments: {
+                    where: assessmentWhere,
+                    select: {
+                        id: true,
+                        type: true,
+                        status: true,
+                        overallScore: true,
+                        maturityLevel: true,
+                        riskLevel: true,
+                        completedAt: true,
+                        createdAt: true,
+                    },
+                    orderBy: { createdAt: 'asc' },
+                },
+            },
+            orderBy: { name: 'asc' },
+        });
+
+        res.json(clients);
+    } catch (error) {
+        console.error('Dashboard clients error:', error);
+        res.status(500).json({ error: 'Error al obtener clientes' });
+    }
+});
+
 // GET /api/dashboard/stats
 dashboardRouter.get('/stats', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
@@ -23,12 +73,10 @@ dashboardRouter.get('/stats', async (req: AuthRequest, res: Response): Promise<v
             // CONSULTANT sees assessments they created within their tenant
             assessmentFilter.createdById = userId;
             if (tenantId) clientFilter.tenantId = tenantId;
-        } else {
+        } else if (tenantId) {
             // ADMIN sees everything in their tenant
-            if (tenantId) {
-                assessmentFilter.client = { tenantId };
-                clientFilter.tenantId = tenantId;
-            }
+            assessmentFilter.client = { tenantId };
+            clientFilter.tenantId = tenantId;
         }
 
         const completedFilter = { ...assessmentFilter, status: 'COMPLETED' };

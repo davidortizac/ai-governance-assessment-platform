@@ -4,7 +4,9 @@
       "Bash(curl:*)",
       "Bash(docker-compose:*)",
       "Bash(powershell:*)",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "Bash(docker ps --format \"table {{.Names}}\\\\t{{.Status}}\\\\t{{.Ports}}\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(m[''name'']\\) for m in d.get\\(''models'',[]\\)]\")"
     ]
   }
 }

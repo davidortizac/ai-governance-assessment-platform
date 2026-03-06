@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import api from '../lib/api';
 import RadarChart from '../components/RadarChart';
+import PdfDownloadModal from '../components/PdfDownloadModal';
+import EmailShareModal from '../components/EmailShareModal';
 
 const RISK_CONFIG: Record<string, { label: string; color: string; description: string }> = {
     CONTROLLED: { label: 'Controlado', color: 'text-emerald-400', description: 'Alta adopción con gobernanza y seguridad sólidas' },
@@ -36,6 +38,61 @@ export default function ResultsPage() {
     const [downloading, setDownloading] = useState(false);
     const [exportingCSV, setExportingCSV] = useState(false);
     const [exportingJSON, setExportingJSON] = useState(false);
+    const [regenerating, setRegenerating] = useState(false);
+    const [deletingAnalysis, setDeletingAnalysis] = useState(false);
+    const [pdfModalOpen, setPdfModalOpen] = useState(false);
+    const [emailModalOpen, setEmailModalOpen] = useState(false);
+
+    const buildSuggestedPdfName = () => {
+        if (!assessment) return `Assessment_CSIA_${id}.pdf`;
+        const clientName = (assessment.client?.name ?? 'Cliente')
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+        const date = new Date(assessment.completedAt ?? assessment.createdAt);
+        const dd   = String(date.getDate()).padStart(2, '0');
+        const mm   = String(date.getMonth() + 1).padStart(2, '0');
+        const aaaa = date.getFullYear();
+        return `Assessment_CSIA_${clientName}_${assessment.type}_${dd}-${mm}-${aaaa}.pdf`;
+    };
+
+    const handleRegenerateAnalysis = async () => {
+        if (!id || regenerating) return;
+        setRegenerating(true);
+        try {
+            await api.post(`/reports/${id}/regenerate-analysis`);
+            // Poll until done
+            const poll = setInterval(async () => {
+                try {
+                    const status = await api.get(`/reports/${id}/regenerate-status`);
+                    if (status.data.status === 'done') {
+                        clearInterval(poll);
+                        const updated = await api.get(`/assessments/${id}`);
+                        setAssessment(updated.data);
+                        setRegenerating(false);
+                    }
+                } catch (err) {
+                    console.error('[LLM] Poll error:', err);
+                    clearInterval(poll);
+                    setRegenerating(false);
+                }
+            }, 10000);
+        } catch {
+            setRegenerating(false);
+        }
+    };
+
+    const handleDeleteAnalysis = async () => {
+        if (!id || !globalThis.confirm('¿Eliminar el análisis IA? Podrás regenerarlo después con otro modelo.')) return;
+        setDeletingAnalysis(true);
+        try {
+            await api.delete(`/reports/${id}/llm-analysis`);
+            setAssessment((prev: any) => ({ ...prev, llmAnalysis: null }));
+        } catch {
+            alert('Error al eliminar el análisis.');
+        } finally {
+            setDeletingAnalysis(false);
+        }
+    };
 
     // Generic blob downloader — uses Authorization header, never exposes token in URL.
     // Prefers the server's Content-Disposition filename over the local fallback.
@@ -89,8 +146,8 @@ export default function ResultsPage() {
         }
     };
 
-    const handleDownloadPDF = () =>
-        downloadBlob(`/reports/${id}/pdf`, `assessment-report-${id}.pdf`, 'application/pdf', setDownloading);
+    const handleDownloadPDF = (customFilename?: string) =>
+        downloadBlob(`/reports/${id}/pdf`, customFilename ?? buildSuggestedPdfName(), 'application/pdf', setDownloading);
     const handleDownloadCSV = () =>
         downloadBlob(`/reports/${id}/csv`, `assessment-export-${id}.csv`, 'text/csv', setExportingCSV);
     const handleDownloadJSON = () =>
@@ -120,22 +177,28 @@ export default function ResultsPage() {
                         {assessment.client?.name} · {assessment.type} · {assessment.completedAt ? new Date(assessment.completedAt).toLocaleDateString('es-ES') : 'N/A'}
                     </p>
                 </div>
-                <button onClick={handleDownloadPDF} disabled={downloading} className="btn-primary flex items-center gap-2">
-                    {downloading ? (
-                        <>
-                            <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                            <span>Generando...</span>
-                        </>
-                    ) : (
-                        <>
-                            <span>📄</span>
-                            <span>Descargar PDF</span>
-                        </>
-                    )}
-                </button>
-
-                {/* Export Buttons */}
                 <div className="flex items-center gap-2">
+                    <button onClick={() => setPdfModalOpen(true)} disabled={downloading} className="btn-primary flex items-center gap-2">
+                        {downloading ? (
+                            <>
+                                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                <span>Generando...</span>
+                            </>
+                        ) : (
+                            <>
+                                <span>📄</span>
+                                <span>Descargar PDF</span>
+                            </>
+                        )}
+                    </button>
+                    <button onClick={() => setEmailModalOpen(true)} className="btn-secondary flex items-center gap-2">
+                        <span>✉</span>
+                        <span>Enviar</span>
+                    </button>
+                </div>
+
+                {/* Export + LLM management buttons */}
+                <div className="flex flex-wrap items-center gap-2">
                     <button
                         onClick={handleDownloadCSV}
                         disabled={exportingCSV}
@@ -152,6 +215,43 @@ export default function ResultsPage() {
                         <span>💾</span>
                         <span>{exportingJSON ? 'Exportando...' : 'JSON'}</span>
                     </button>
+
+                    <div className="w-px h-6 bg-primary-800/30 mx-1" />
+
+                    <button
+                        onClick={handleRegenerateAnalysis}
+                        disabled={regenerating || deletingAnalysis}
+                        className="btn-secondary flex items-center gap-2 text-sm"
+                        title="Regenerar análisis IA con el modelo activo"
+                    >
+                        {regenerating ? (
+                            <>
+                                <div className="w-3.5 h-3.5 border-2 border-primary-400/30 border-t-primary-400 rounded-full animate-spin" />
+                                <span>Generando...</span>
+                            </>
+                        ) : (
+                            <>
+                                <span>🤖</span>
+                                <span>{assessment.llmAnalysis ? 'Regenerar análisis' : 'Generar análisis'}</span>
+                            </>
+                        )}
+                    </button>
+
+                    {assessment.llmAnalysis && (
+                        <button
+                            onClick={handleDeleteAnalysis}
+                            disabled={deletingAnalysis || regenerating}
+                            className="btn-secondary flex items-center gap-2 text-sm hover:text-red-400 hover:border-red-500/30"
+                            title="Eliminar análisis IA para poder regenerarlo con otro modelo"
+                        >
+                            {deletingAnalysis ? (
+                                <div className="w-3.5 h-3.5 border-2 border-red-400/30 border-t-red-400 rounded-full animate-spin" />
+                            ) : (
+                                <span>🗑️</span>
+                            )}
+                            <span>{deletingAnalysis ? 'Eliminando...' : 'Eliminar análisis'}</span>
+                        </button>
+                    )}
                 </div>
             </div>
 
@@ -248,6 +348,25 @@ export default function ResultsPage() {
                     ))}
                 </div>
             </div>
+
+            {/* PDF download modal */}
+            <PdfDownloadModal
+                isOpen={pdfModalOpen}
+                suggestedName={buildSuggestedPdfName()}
+                loading={downloading}
+                onConfirm={(filename) => {
+                    setPdfModalOpen(false);
+                    handleDownloadPDF(filename);
+                }}
+                onClose={() => setPdfModalOpen(false)}
+            />
+
+            {/* Email share modal */}
+            <EmailShareModal
+                isOpen={emailModalOpen}
+                assessment={assessment}
+                onClose={() => setEmailModalOpen(false)}
+            />
         </div>
     );
 }
