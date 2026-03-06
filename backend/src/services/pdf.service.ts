@@ -2,54 +2,92 @@ import PDFDocument from 'pdfkit';
 import prisma from '../lib/prisma';
 import fs from 'fs';
 import path from 'path';
-import { getMaturityLabel } from './scoring.service';
 import { LLMAnalysis } from './llm.service';
 
-// ─── Page geometry (A4) ───────────────────────────────────────────────────────
+/* -------------------------------------------------------------------------- */
+/* PAGE GEOMETRY                                                               */
+/* -------------------------------------------------------------------------- */
+
 const PAGE_W    = 595.28;
 const PAGE_H    = 841.89;
-const MARGIN    = 50;
-const CONTENT_W = PAGE_W - MARGIN * 2;   // 495.28
-const HEADER_H  = 88;
-const CONTENT_Y = HEADER_H + 12;         // 100 — first usable Y after header
-const FOOTER_Y  = PAGE_H - 50;           // ~792
+const MARGIN    = 48;
+const CONTENT_W = PAGE_W - MARGIN * 2;
+const HEADER_H  = 76;
+const CONTENT_Y = HEADER_H + 18;
+const FOOTER_Y  = PAGE_H - 36;
 
-// ─── Professional color palette ───────────────────────────────────────────────
+/* -------------------------------------------------------------------------- */
+/* COLOR PALETTE                                                               */
+/* -------------------------------------------------------------------------- */
+
 const C = {
-    NAVY:       '#0D1B2A',   // near-black navy — header & cover bg
-    NAVY_MID:   '#1B3A5C',   // mid-navy — card accents
-    STEEL:      '#2E6DA4',   // accent blue
-    GOLD:       '#C9A84C',   // gold — accent lines & highlights
-    SILVER:     '#9AAAB8',   // muted text on dark bg
+    NAVY:       '#0F2C5F',
+    STEEL:      '#2563EB',
+    GOLD:       '#C9A84C',
+    GOLD_BG:    '#FEF3C7',
+    SILVER:     '#94A3B8',
     WHITE:      '#FFFFFF',
-    PAGE_BG:    '#FAFBFC',   // barely-white page bg
-    TEXT:       '#1A2035',   // primary body text
-    TEXT_MUTED: '#4A5568',   // secondary body text
-    BORDER:     '#D1D9E0',   // subtle borders
-    CARD_BG:    '#FFFFFF',
-    // Risk
-    CONTROLLED: '#0F9060',
-    LOW:        '#27AE60',
-    MEDIUM:     '#D4860A',
-    HIGH:       '#C0392B',
-    CRITICAL:   '#922B21',
-    LATENT:     '#6C3483',
-};
-
-const RISK_LABELS: Record<string, string> = {
-    CONTROLLED: 'Controlado', LOW: 'Bajo',   MEDIUM: 'Medio',
-    HIGH: 'Alto',             CRITICAL: 'Crítico', LATENT: 'Latente',
+    PAGE_BG:    '#F4F6FA',
+    TEXT:       '#1E293B',
+    TEXT_MUTED: '#475569',
+    TEXT_LIGHT: '#94A3B8',
+    ROW_ALT:    '#EEF2FF',
+    CONTROLLED: '#059669',
+    LOW:        '#16A34A',
+    MEDIUM:     '#D97706',
+    HIGH:       '#DC2626',
+    CRITICAL:   '#991B1B',
+    LATENT:     '#7C3AED',
 };
 
 const FALLBACK = 'El análisis automático no está disponible. Contacte a su consultor.';
 
-// ─── Font resolution — tries Ebrima (Windows), falls back to Helvetica ────────
+/* -------------------------------------------------------------------------- */
+/* LOOKUP TABLES                                                               */
+/* -------------------------------------------------------------------------- */
+
+const RISK_LABEL: Record<string, string> = {
+    CONTROLLED: 'Controlado', LOW: 'Bajo',      MEDIUM: 'Medio',
+    HIGH: 'Alto',             CRITICAL: 'Crítico', LATENT: 'Latente',
+};
+
+const RISK_COLOR: Record<string, string> = {
+    CONTROLLED: C.CONTROLLED, LOW: C.LOW,      MEDIUM: C.MEDIUM,
+    HIGH: C.HIGH,             CRITICAL: C.CRITICAL, LATENT: C.LATENT,
+};
+
+const MATURITY_LABEL: Record<number, string> = {
+    1: 'Experimental', 2: 'Emergente', 3: 'Definido', 4: 'Gestionado', 5: 'Optimizado',
+};
+
+/* -------------------------------------------------------------------------- */
+/* SCORE HELPERS                                                               */
+/* -------------------------------------------------------------------------- */
+
+function scoreColor(s: number): string {
+    if (s < 1.5) return C.HIGH;
+    if (s < 2.5) return C.MEDIUM;
+    if (s < 3.5) return C.STEEL;
+    return C.CONTROLLED;
+}
+
+function scoreToMaturity(score: number): string {
+    if (score < 1) return 'Experimental';
+    if (score < 2) return 'Emergente';
+    if (score < 3) return 'Definido';
+    if (score < 4) return 'Gestionado';
+    return 'Optimizado';
+}
+
+/* -------------------------------------------------------------------------- */
+/* FONT RESOLUTION                                                             */
+/* -------------------------------------------------------------------------- */
+
 function resolveFonts(): { reg: string; bold: string; foundEbrima: boolean } {
     const roots = [
         path.resolve(__dirname, '../../assets/fonts'),
         path.resolve(process.cwd(), 'assets/fonts'),
         'C:\\Windows\\Fonts',
-        '/mnt/c/Windows/Fonts',
     ];
     for (const root of roots) {
         const reg  = path.join(root, 'ebrima.ttf');
@@ -61,29 +99,53 @@ function resolveFonts(): { reg: string; bold: string; foundEbrima: boolean } {
     return { reg: 'Helvetica', bold: 'Helvetica-Bold', foundEbrima: false };
 }
 
-// ─── Logo resolution — grey corporate version preferred ───────────────────────
+/* -------------------------------------------------------------------------- */
+/* LOGO RESOLUTION                                                             */
+/* -------------------------------------------------------------------------- */
+
 function resolveLogoPath(): string {
     const candidates = [
-        // Docker: bundled inside backend image
         path.resolve(process.cwd(), 'assets/GammaGris.png'),
         path.resolve(__dirname, '../../assets/GammaGris.png'),
-        // Local dev: Windows absolute path
-        'e:\\IA\\GAMMA\\ASESSMENT IA\\frontend\\imagenes\\GammaGris.png',
-        // Local dev: relative paths
-        path.resolve(__dirname, '../../../../frontend/imagenes/GammaGris.png'),
-        path.resolve(process.cwd(), '../frontend/imagenes/GammaGris.png'),
         path.resolve('frontend/imagenes/GammaGris.png'),
-        // Fallback: black logo
-        path.resolve(__dirname, '../../../../frontend/imagenes/Logo-Gamma-Ingenieros-(Negro).png'),
-        path.resolve(process.cwd(), '../frontend/imagenes/Logo-Gamma-Ingenieros-(Negro).png'),
-        // Fallback: public logo
-        path.resolve(__dirname, '../../../../frontend/public/logo-gamma.png'),
-        path.resolve(process.cwd(), '../frontend/public/logo-gamma.png'),
+        path.resolve('frontend/public/logo-gamma.png'),
     ];
     return candidates.find(p => fs.existsSync(p)) ?? '';
 }
 
-// ─── Main export ──────────────────────────────────────────────────────────────
+/* -------------------------------------------------------------------------- */
+/* REUSABLE PAGE RENDERERS                                                     */
+/* -------------------------------------------------------------------------- */
+
+function renderHeader(doc: any, FR: string, FB: string, logoPath: string, title: string): void {
+    doc.rect(0, 0, PAGE_W, HEADER_H).fill(C.NAVY);
+    doc.rect(0, 0, PAGE_W, 4).fill(C.GOLD);
+    if (logoPath) {
+        try { doc.image(logoPath, MARGIN, 16, { height: 26 }); } catch { /* skip */ }
+    }
+    const tx = MARGIN + (logoPath ? 118 : 0);
+    doc.font(FB).fontSize(10).fillColor(C.WHITE)
+        .text('GAMMA INGENIEROS', tx, 18, { lineBreak: false });
+    doc.font(FR).fontSize(7.5).fillColor(C.SILVER)
+        .text('CSIA · Cybersecurity Strategy for Artificial Intelligence', tx, 32, { lineBreak: false });
+    doc.font(FB).fontSize(10).fillColor(C.GOLD)
+        .text(title.toUpperCase(), MARGIN, 54, { width: CONTENT_W, align: 'right', lineBreak: false });
+}
+
+function renderFooter(doc: any, FR: string, FB: string, pageNum: number, total: number): void {
+    doc.rect(MARGIN, FOOTER_Y - 8, CONTENT_W, 0.5).fill(C.GOLD);
+    doc.font(FR).fontSize(7).fillColor(C.TEXT_LIGHT)
+        .text('Gamma Ingenieros  ·  AI Governance Platform  ·  Documento Confidencial',
+            MARGIN, FOOTER_Y, { lineBreak: false });
+    doc.font(FB).fontSize(7).fillColor(C.TEXT_LIGHT)
+        .text(`${pageNum} / ${total}`, MARGIN, FOOTER_Y,
+            { width: CONTENT_W, align: 'right', lineBreak: false });
+}
+
+/* -------------------------------------------------------------------------- */
+/* MAIN REPORT                                                                 */
+/* -------------------------------------------------------------------------- */
+
 export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
     const assessment = await prisma.assessment.findUnique({
         where: { id: assessmentId },
@@ -102,445 +164,405 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
 
     if (!assessment) throw new Error('Assessment not found');
 
-    const llmData = (assessment as any).llmAnalysis as LLMAnalysis | null;
+    const llmData    = (assessment as any).llmAnalysis as LLMAnalysis | null;
+    const riskLevel  = (assessment as any).riskLevel   as string | null;
+    const matLevel   = (assessment as any).maturityLevel as number | null;
 
     return new Promise((resolve, reject) => {
         const chunks: Buffer[] = [];
         const doc = new PDFDocument({ size: 'A4', margin: 0, bufferPages: true });
 
-        doc.on('data', (chunk: Buffer) => chunks.push(chunk));
-        doc.on('end', () => resolve(Buffer.concat(chunks)));
+        doc.on('data', (c: Buffer) => chunks.push(c));
+        doc.on('end',  () => resolve(Buffer.concat(chunks)));
         doc.on('error', reject);
 
-        // ── Fonts ────────────────────────────────────────────────────────────
-        const fontPaths = resolveFonts();
-        let FONT_REG  = 'Helvetica';
-        let FONT_BOLD = 'Helvetica-Bold';
-        let FONT_ITAL = 'Helvetica-Oblique';
-
-        if (fontPaths.foundEbrima) {
+        /* ── Fonts ── */
+        const fp = resolveFonts();
+        let FR = 'Helvetica';
+        let FB = 'Helvetica-Bold';
+        if (fp.foundEbrima) {
             try {
-                doc.registerFont('Ebrima',     fontPaths.reg);
-                doc.registerFont('Ebrima-Bold', fontPaths.bold);
-                FONT_REG  = 'Ebrima';
-                FONT_BOLD = 'Ebrima-Bold';
-                FONT_ITAL = 'Ebrima';
-            } catch {
-                // keep Helvetica
-            }
+                doc.registerFont('Ebrima',      fp.reg);
+                doc.registerFont('Ebrima-Bold', fp.bold);
+                FR = 'Ebrima';
+                FB = 'Ebrima-Bold';
+            } catch { /* keep Helvetica */ }
         }
 
         const logoPath = resolveLogoPath();
 
-        // ── Header helper ─────────────────────────────────────────────────────
-        // Structure: [gold border 3px] [navy bg] [logo + company | separator | page title]
-        const addHeader = (title: string) => {
-            // Background
-            doc.rect(0, 0, PAGE_W, HEADER_H).fill(C.NAVY);
-            // Gold top border
-            doc.rect(0, 0, PAGE_W, 3).fill(C.GOLD);
+        /* ── Helpers ── */
+        const pageBg    = () => doc.rect(0, 0, PAGE_W, PAGE_H).fill(C.PAGE_BG);
+        const addHeader = (title: string) => renderHeader(doc, FR, FB, logoPath, title);
+        const addFooter = (n: number, t: number) => renderFooter(doc, FR, FB, n, t);
 
-            // Logo (left side)
-            if (logoPath) {
-                try {
-                    doc.image(logoPath, MARGIN, 10, { height: 28 });
-                } catch {
-                    doc.fontSize(9).fillColor(C.WHITE).font(FONT_BOLD)
-                        .text('GAMMA', MARGIN, 14, { lineBreak: false });
-                }
-            } else {
-                doc.fontSize(9).fillColor(C.WHITE).font(FONT_BOLD)
-                    .text('GAMMA', MARGIN, 14, { lineBreak: false });
-            }
-
-            // Company name & subtitle (right of logo area, ~155px offset)
-            doc.fontSize(9).fillColor(C.WHITE).font(FONT_BOLD)
-                .text('GAMMA INGENIEROS', MARGIN + 155, 12, { lineBreak: false });
-            doc.fontSize(7.5).fillColor(C.SILVER).font(FONT_REG)
-                .text('CSIA · Cybersecurity AI Strategy', MARGIN + 155, 25, { lineBreak: false });
-
-            // Gold separator line
-            doc.rect(MARGIN, 47, CONTENT_W, 0.75).fill(C.GOLD);
-
-            // Page title — centered, BELOW separator
-            doc.fontSize(11).fillColor(C.WHITE).font(FONT_BOLD)
-                .text(title, MARGIN, 57, { width: CONTENT_W, align: 'center', lineBreak: false });
+        /* ── Helper: score bar ── */
+        const drawScoreBar = (x: number, y: number, score: number, barW = 100, barH = 7) => {
+            const pct = Math.min(Math.max(Number(score) / 4, 0), 1);
+            doc.rect(x, y, barW, barH).fill('#DDE3EE');
+            if (pct > 0) doc.rect(x, y, barW * pct, barH).fill(scoreColor(Number(score)));
         };
 
-        // ── Footer helper ─────────────────────────────────────────────────────
-        const addFooter = (pageNum: number, total: number) => {
-            doc.rect(0, PAGE_H - 35, PAGE_W, 35).fill('#F0F3F6');
-            doc.rect(0, PAGE_H - 36, PAGE_W, 1).fill(C.BORDER);
-            doc.fontSize(7.5).fillColor(C.TEXT_MUTED).font(FONT_REG)
-                .text('Gamma Ingenieros AI Governance Platform · Confidencial', MARGIN, PAGE_H - 23,
-                    { align: 'left', width: CONTENT_W - 60, lineBreak: false });
-            doc.fontSize(7.5).fillColor(C.TEXT_MUTED).font(FONT_BOLD)
-                .text(`${pageNum} / ${total}`, PAGE_W - MARGIN - 40, PAGE_H - 23,
-                    { align: 'right', width: 40, lineBreak: false });
-        };
+        /* ── Helper: section label ── */
+        const secLabel = (text: string, x: number, y: number) =>
+            doc.font(FB).fontSize(7.5).fillColor(C.TEXT_LIGHT).text(text, x, y, { lineBreak: false });
 
-        // ════════════════════════════════════════════════════════════════════
-        // PAGE 1: COVER
-        // ════════════════════════════════════════════════════════════════════
+        /* ══════════════════════════════════════════════════════════════════════
+           PAGE 1 — COVER
+        ══════════════════════════════════════════════════════════════════════ */
+
         doc.rect(0, 0, PAGE_W, PAGE_H).fill(C.NAVY);
+        doc.rect(0, 0, PAGE_W, 5).fill(C.GOLD);
+        doc.rect(0, 0, 5, PAGE_H).fill(C.GOLD);
 
-        // Decorative geometry (subtle, behind content)
-        doc.circle(PAGE_W + 60, -60, 290).fillOpacity(0.05).fill(C.STEEL);
-        doc.circle(-60, PAGE_H + 60, 250).fillOpacity(0.05).fill(C.GOLD);
-        doc.fillOpacity(1);
-
-        // Gold top stripe
-        doc.rect(0, 0, PAGE_W, 4).fill(C.GOLD);
-
-        // Right accent bar
-        doc.rect(PAGE_W - 8, 0, 8, PAGE_H).fill(C.NAVY_MID);
-
-        // Logo — centered
-        const coverLogoW = 160;
-        const coverLogoX = (PAGE_W - coverLogoW) / 2;
         if (logoPath) {
-            try {
-                doc.image(logoPath, coverLogoX, 55, { width: coverLogoW });
-            } catch {
-                doc.fontSize(20).fillColor(C.WHITE).font(FONT_BOLD)
-                    .text('GAMMA INGENIEROS', MARGIN, 65, { align: 'center', width: CONTENT_W, lineBreak: false });
-            }
-        } else {
-            doc.fontSize(20).fillColor(C.WHITE).font(FONT_BOLD)
-                .text('GAMMA INGENIEROS', MARGIN, 65, { align: 'center', width: CONTENT_W, lineBreak: false });
+            try { doc.image(logoPath, PAGE_W / 2 - 50, 55, { width: 100 }); } catch { /* skip */ }
         }
 
-        // Thin gold rule below logo
-        doc.rect(140, 143, 315, 0.75).fill(C.GOLD);
+        const companyY = logoPath ? 178 : 100;
+        doc.font(FB).fontSize(11).fillColor(C.GOLD)
+            .text('GAMMA INGENIEROS', 0, companyY, { width: PAGE_W, align: 'center', lineBreak: false });
 
-        // Report type badge
-        doc.rect(200, 155, 195, 22).fill(C.NAVY_MID);
-        doc.fontSize(7.5).fillColor(C.GOLD).font(FONT_BOLD)
-            .text('INFORME EJECUTIVO DE MADUREZ EN IA', 200, 162,
-                { width: 195, align: 'center', characterSpacing: 0.8, lineBreak: false });
+        const sepY = companyY + 22;
+        doc.rect(PAGE_W / 2 - 100, sepY + 6, 200, 1).fill(C.GOLD);
 
-        // Main title
-        doc.fontSize(28).fillColor(C.WHITE).font(FONT_BOLD)
-            .text('ESTRATEGIA DE', MARGIN, 192, { align: 'center', width: CONTENT_W, lineBreak: false });
-        doc.fontSize(28).fillColor(C.GOLD).font(FONT_BOLD)
-            .text('CIBERSEGURIDAD EN IA', MARGIN, 226, { align: 'center', width: CONTENT_W, lineBreak: false });
+        const titleY = sepY + 20;
+        doc.font(FB).fontSize(26).fillColor(C.WHITE)
+            .text('AI CYBERSECURITY', 0, titleY, { width: PAGE_W, align: 'center', lineBreak: false });
+        doc.font(FB).fontSize(26).fillColor(C.WHITE)
+            .text('MATURITY ASSESSMENT', 0, titleY + 36, { width: PAGE_W, align: 'center', lineBreak: false });
+        doc.font(FR).fontSize(11).fillColor(C.SILVER)
+            .text('Evaluación de Madurez y Riesgo en Inteligencia Artificial',
+                0, titleY + 76, { width: PAGE_W, align: 'center', lineBreak: false });
 
-        doc.fontSize(11).fillColor(C.SILVER).font(FONT_REG)
-            .text('Evaluación de Madurez & Riesgos · CSIA Framework', MARGIN, 270,
-                { align: 'center', width: CONTENT_W, lineBreak: false });
-
-        // Decorative triple-line rule
-        doc.rect(160, 296, 275, 0.75).fill(C.SILVER);
-        doc.rect(160, 299, 275, 0.4).fill(C.GOLD);
-        doc.rect(160, 302, 275, 0.4).fill(C.SILVER);
-
-        // ── Client info box ──────────────────────────────────────────────────
-        const boxX = MARGIN;
-        const boxY = 316;
-        const boxW = CONTENT_W;
-        const boxH = 225;
-
-        // Shadow
-        doc.roundedRect(boxX + 3, boxY + 3, boxW, boxH, 10).fill('#070F1A');
-        // Box body
-        doc.roundedRect(boxX, boxY, boxW, boxH, 10).fill('#0F2034');
-        // Gold left accent
-        doc.rect(boxX, boxY, 4, boxH).fill(C.GOLD);
-        // Top gold rule inside box
-        doc.rect(boxX + 20, boxY + 70, boxW - 40, 0.5).fill('#2A4A68');
-
-        // "INFORME PREPARADO PARA" label
-        doc.fontSize(8).fillColor(C.GOLD).font(FONT_BOLD)
-            .text('INFORME PREPARADO PARA', boxX + 10, boxY + 22,
-                { width: boxW - 14, align: 'center', characterSpacing: 1.2, lineBreak: false });
-
-        // Client name
-        const clientNameY = boxY + 38;
-        doc.fontSize(20).fillColor(C.WHITE).font(FONT_BOLD)
-            .text(assessment.client.name, boxX + 10, clientNameY,
-                { width: boxW - 14, align: 'center', lineBreak: false });
-
-        // Industry
-        if (assessment.client.industry) {
-            doc.fontSize(9.5).fillColor(C.SILVER).font(FONT_REG)
-                .text(assessment.client.industry, boxX + 10, clientNameY + 28,
-                    { width: boxW - 14, align: 'center', lineBreak: false });
+        /* Client info block */
+        const infoY = titleY + 112;
+        doc.rect(MARGIN + 30, infoY, CONTENT_W - 60, 0.5).fill('#334E7B');
+        const infoRows = [
+            { label: 'ORGANIZACIÓN EVALUADA', value: assessment.client.name },
+            { label: 'CONSULTOR',             value: assessment.createdBy.name },
+            { label: 'FECHA',
+              value: assessment.completedAt?.toLocaleDateString('es-ES', {
+                  day: '2-digit', month: 'long', year: 'numeric' }) ?? 'N/A' },
+            { label: 'TIPO DE EVALUACIÓN',    value: assessment.type },
+        ];
+        let infoLY = infoY + 14;
+        for (const row of infoRows) {
+            doc.font(FR).fontSize(8).fillColor(C.SILVER)
+                .text(row.label, MARGIN + 42, infoLY, { lineBreak: false });
+            doc.font(FB).fontSize(10).fillColor(C.WHITE)
+                .text(row.value, MARGIN + 42, infoLY + 12, { lineBreak: false });
+            infoLY += 36;
         }
+        doc.rect(MARGIN + 30, infoLY + 2, CONTENT_W - 60, 0.5).fill('#334E7B');
 
-        // Meta rows
-        const col1X   = boxX + 28;
-        const col2X   = boxX + boxW / 2 + 12;
-        const metaY1  = boxY + 88;
-        const metaY2  = metaY1 + 48;
+        /* Score display */
+        const scoreY = infoLY + 26;
+        const scoreVal = assessment.overallScore?.toFixed(2) ?? '—';
+        doc.font(FB).fontSize(48).fillColor(C.GOLD)
+            .text(scoreVal, 0, scoreY, { width: PAGE_W, align: 'center', lineBreak: false });
+        doc.font(FR).fontSize(12).fillColor(C.SILVER)
+            .text('/ 4.0  ·  SCORE GENERAL', 0, scoreY + 58,
+                { width: PAGE_W, align: 'center', lineBreak: false });
 
-        // Row 1
-        doc.fontSize(7).fillColor(C.SILVER).font(FONT_BOLD)
-            .text('FECHA', col1X, metaY1, { characterSpacing: 0.8, lineBreak: false });
-        doc.fontSize(10).fillColor(C.WHITE).font(FONT_REG)
-            .text(assessment.completedAt?.toLocaleDateString('es-ES',
-                { year: 'numeric', month: 'long', day: 'numeric' }) ?? 'N/A',
-                col1X, metaY1 + 12, { lineBreak: false });
+        const mat  = MATURITY_LABEL[matLevel ?? 0] ?? '—';
+        const risk = RISK_LABEL[riskLevel ?? ''] ?? '—';
+        doc.font(FR).fontSize(10).fillColor(C.SILVER)
+            .text(`Madurez: `, 0, scoreY + 82, { width: PAGE_W / 2, align: 'right', lineBreak: false });
+        doc.font(FB).fontSize(10).fillColor(C.WHITE)
+            .text(mat, PAGE_W / 2 + 2, scoreY + 82, { lineBreak: false });
+        doc.font(FR).fontSize(10).fillColor(C.SILVER)
+            .text('  ·  Riesgo: ', PAGE_W / 2 + 2 + doc.widthOfString(mat), scoreY + 82, { lineBreak: false });
+        doc.font(FB).fontSize(10).fillColor(RISK_COLOR[riskLevel ?? ''] ?? C.SILVER)
+            .text(risk, PAGE_W / 2 + 2 + doc.widthOfString(mat) + doc.widthOfString('  ·  Riesgo: '), scoreY + 82, { lineBreak: false });
 
-        doc.fontSize(7).fillColor(C.SILVER).font(FONT_BOLD)
-            .text('CONSULTOR', col2X, metaY1, { characterSpacing: 0.8, lineBreak: false });
-        doc.fontSize(10).fillColor(C.WHITE).font(FONT_REG)
-            .text(assessment.createdBy.name, col2X, metaY1 + 12, { lineBreak: false });
+        doc.font(FR).fontSize(7).fillColor(C.SILVER)
+            .text('CONFIDENCIAL · Para uso interno exclusivo',
+                0, PAGE_H - 28, { width: PAGE_W, align: 'center', lineBreak: false });
 
-        // Row 2
-        doc.fontSize(7).fillColor(C.SILVER).font(FONT_BOLD)
-            .text('ELABORADO POR', col1X, metaY2, { characterSpacing: 0.8, lineBreak: false });
-        doc.fontSize(10).fillColor(C.GOLD).font(FONT_BOLD)
-            .text('Gamma Ingenieros S.A.S', col1X, metaY2 + 12, { lineBreak: false });
+        /* ══════════════════════════════════════════════════════════════════════
+           PAGE 2 — RESUMEN EJECUTIVO
+        ══════════════════════════════════════════════════════════════════════ */
 
-        if (assessment.overallScore) {
-            doc.fontSize(7).fillColor(C.SILVER).font(FONT_BOLD)
-                .text('SCORE GLOBAL', col2X, metaY2, { characterSpacing: 0.8, lineBreak: false });
-            doc.fontSize(10).fillColor(C.WHITE).font(FONT_REG)
-                .text(`${assessment.overallScore.toFixed(2)} / 4.0`, col2X, metaY2 + 12, { lineBreak: false });
-        }
-
-        // Assessment type badge
-        doc.rect(boxX + 20, boxY + boxH - 38, boxW - 40, 22).fill('#142540');
-        const assessLabel = assessment.type === 'EXPRESS' ? 'Assessment Express' : 'Assessment Avanzado';
-        doc.fontSize(8.5).fillColor(C.SILVER).font(FONT_REG)
-            .text(assessLabel, boxX + 20, boxY + boxH - 30, { width: boxW - 40, align: 'center', lineBreak: false });
-
-        // Bottom tagline
-        doc.fontSize(7.5).fillColor('#2A4060').font(FONT_REG)
-            .text('Clasificación: Confidencial · Para uso interno exclusivo', MARGIN, PAGE_H - 42,
-                { align: 'center', width: CONTENT_W, lineBreak: false });
-
-        // ════════════════════════════════════════════════════════════════════
-        // PAGE 2: EXECUTIVE SUMMARY
-        // ════════════════════════════════════════════════════════════════════
         doc.addPage();
+        pageBg();
         addHeader('Resumen Ejecutivo');
 
-        // Metric cards
-        const cardY = CONTENT_Y + 4;
-        const cardW = 148;
-        const cardH = 112;
-        const riskKey = assessment.riskLevel ?? 'MEDIUM';
-        const riskColor = (C as any)[riskKey] ?? C.MEDIUM;
+        let y = CONTENT_Y;
 
-        drawCard(doc, MARGIN,       cardY, cardW, cardH, 'Score General',
-            `${assessment.overallScore?.toFixed(2) ?? '—'}`, 'de 4.0', C.STEEL, FONT_REG, FONT_BOLD);
-        drawCard(doc, MARGIN + 174, cardY, cardW, cardH, 'Nivel de Madurez',
-            `${assessment.maturityLevel ?? '—'}`,
-            getMaturityLabel(assessment.maturityLevel ?? 0), C.NAVY_MID, FONT_REG, FONT_BOLD);
-        drawCard(doc, MARGIN + 348, cardY, cardW, cardH, 'Nivel de Riesgo',
-            RISK_LABELS[riskKey] || 'Medio', '', riskColor, FONT_REG, FONT_BOLD);
+        /* Executive summary */
+        secLabel('RESUMEN EJECUTIVO', MARGIN, y);
+        y += 14;
+        const execText = llmData?.executiveSummary ?? FALLBACK;
+        doc.font(FR).fontSize(10.5).fillColor(C.TEXT)
+            .text(execText, MARGIN, y, { width: CONTENT_W, align: 'justify', lineGap: 3 });
+        y += doc.heightOfString(execText, { width: CONTENT_W, lineGap: 3 }) + 22;
 
-        let y2 = cardY + cardH + 22;
+        /* Awareness callout */
+        const awText   = llmData?.awarenessMessage ?? FALLBACK;
+        const awInnerW = CONTENT_W - 28;
+        const awH      = doc.heightOfString(awText, { width: awInnerW, lineGap: 3 }) + 38;
+        doc.rect(MARGIN, y, CONTENT_W, awH).fill(C.GOLD_BG);
+        doc.rect(MARGIN, y, 4, awH).fill(C.GOLD);
+        secLabel('POR QUÉ ES IMPORTANTE ACTUAR AHORA', MARGIN + 16, y + 10);
+        doc.font(FR).fontSize(10.5).fillColor(C.TEXT_MUTED)
+            .text(awText, MARGIN + 16, y + 26, { width: awInnerW, align: 'justify', lineGap: 3 });
+        y += awH + 22;
 
-        // Section: Análisis Situacional
-        y2 = drawSectionTitle(doc, 'Análisis Situacional', y2, C.GOLD, FONT_BOLD);
-        doc.fontSize(12).fillColor(C.TEXT_MUTED).font(FONT_REG)
-            .text(llmData?.executiveSummary ?? FALLBACK, MARGIN, y2,
-                { align: 'justify', width: CONTENT_W, lineGap: 2 });
-        y2 += doc.heightOfString(llmData?.executiveSummary ?? FALLBACK,
-            { width: CONTENT_W }) + 22;
-
-        // Section: Por qué actuar ahora
-        y2 = drawSectionTitle(doc, 'Por qué es crítico actuar ahora', y2, C.STEEL, FONT_BOLD);
-        doc.fontSize(12).fillColor(C.TEXT_MUTED).font(FONT_REG)
-            .text(llmData?.awarenessMessage ?? FALLBACK, MARGIN, y2,
-                { align: 'justify', width: CONTENT_W, lineGap: 2 });
-
-        // ════════════════════════════════════════════════════════════════════
-        // PAGE 3: PILLAR FINDINGS
-        // ════════════════════════════════════════════════════════════════════
-        doc.addPage();
-        addHeader('Hallazgos y Brechas por Pilar');
-
-        let py = CONTENT_Y + 4;
-
-        for (const ps of assessment.pillarScores) {
-            // Auto-paginate
-            if (py > PAGE_H - 120) {
-                doc.addPage();
-                addHeader('Hallazgos por Pilar (cont.)');
-                py = CONTENT_Y + 4;
-            }
-
-            const pillarLLM = llmData?.pillarAnalyses?.[ps.pillar.key];
-            const barColor  = ps.score < 1.5 ? C.HIGH
-                            : ps.score < 2.5 ? C.MEDIUM
-                            : ps.score < 3.5 ? C.STEEL : C.CONTROLLED;
-
-            // Pillar header bar
-            doc.rect(MARGIN, py, CONTENT_W, 26).fill('#EEF2F7');
-            // Score fill (proportional)
-            const fillW = Math.round((ps.score / 4) * CONTENT_W);
-            doc.rect(MARGIN, py, fillW, 26).fillOpacity(0.18).fill(barColor);
-            doc.fillOpacity(1);
-            // Left accent
-            doc.rect(MARGIN, py, 4, 26).fill(barColor);
-
-            doc.fontSize(10).fillColor(C.TEXT).font(FONT_BOLD)
-                .text(`${ps.pillar.name}`, MARGIN + 10, py + 7, { lineBreak: false });
-            doc.fontSize(9).fillColor(C.TEXT_MUTED).font(FONT_REG)
-                .text(`Score: ${ps.score.toFixed(2)} / 4.0`,
-                    MARGIN + CONTENT_W - 110, py + 8, { width: 106, align: 'right', lineBreak: false });
-
-            py += 32;
-
-            if (pillarLLM) {
-                // Findings
-                doc.fontSize(9).fillColor(C.TEXT).font(FONT_BOLD)
-                    .text('Hallazgos:', MARGIN + 6, py, { lineBreak: false });
-                py += 13;
-                doc.fontSize(10).fillColor(C.TEXT_MUTED).font(FONT_REG)
-                    .text(pillarLLM.findings, MARGIN + 6, py,
-                        { width: CONTENT_W - 6, align: 'justify', lineGap: 2 });
-                py += doc.heightOfString(pillarLLM.findings, { width: CONTENT_W - 6 }) + 7;
-
-                // Gaps
-                doc.fontSize(9).fillColor(C.TEXT).font(FONT_BOLD)
-                    .text('Brechas:', MARGIN + 6, py, { lineBreak: false });
-                py += 13;
-                doc.fontSize(10).fillColor(C.TEXT_MUTED).font(FONT_REG)
-                    .text(pillarLLM.gaps, MARGIN + 6, py,
-                        { width: CONTENT_W - 6, align: 'justify', lineGap: 2 });
-                py += doc.heightOfString(pillarLLM.gaps, { width: CONTENT_W - 6 }) + 7;
-
-                // Recommendation
-                doc.fontSize(9).fillColor(C.STEEL).font(FONT_BOLD)
-                    .text('Recomendación:', MARGIN + 6, py, { lineBreak: false });
-                py += 13;
-                doc.fontSize(10).fillColor(C.TEXT_MUTED).font(FONT_REG)
-                    .text(pillarLLM.recommendation, MARGIN + 6, py,
-                        { width: CONTENT_W - 6, align: 'justify', lineGap: 2 });
-                py += doc.heightOfString(pillarLLM.recommendation, { width: CONTENT_W - 6 }) + 7;
-            } else {
-                doc.fontSize(10).fillColor(C.SILVER).font(FONT_ITAL)
-                    .text(FALLBACK, MARGIN + 6, py, { width: CONTENT_W - 6, lineGap: 2 });
-                py += 18;
-            }
-
-            py += 14; // inter-pillar spacing
+        /* Industry benchmark */
+        if (y < FOOTER_Y - 80) {
+            const benchText = llmData?.industryBenchmark ?? FALLBACK;
+            secLabel('CONTEXTO DE INDUSTRIA', MARGIN, y);
+            y += 14;
+            doc.font(FR).fontSize(10).fillColor(C.TEXT_MUTED)
+                .text(benchText, MARGIN, y, { width: CONTENT_W, align: 'justify', lineGap: 3 });
         }
 
-        // ════════════════════════════════════════════════════════════════════
-        // PAGE 4: IMPROVEMENT PLAN
-        // ════════════════════════════════════════════════════════════════════
+        /* ══════════════════════════════════════════════════════════════════════
+           PAGE 3 — MODELO ESTRATÉGICO CSIA
+        ══════════════════════════════════════════════════════════════════════ */
+
         doc.addPage();
-        addHeader('Plan de Mejora Priorizado');
+        pageBg();
+        addHeader('Modelo Estratégico CSIA');
 
-        let iy = CONTENT_Y + 4;
+        let cy = CONTENT_Y;
 
-        // Quick Wins header
-        doc.rect(MARGIN, iy, CONTENT_W, 30).fill(C.STEEL);
-        doc.rect(MARGIN, iy, 4, 30).fill(C.GOLD);
-        doc.fontSize(11).fillColor(C.WHITE).font(FONT_BOLD)
-            .text('Victorias Rápidas  ·  Acciones < 90 días', MARGIN + 12, iy + 9,
-                { width: CONTENT_W - 12, lineBreak: false });
-        iy += 38;
+        doc.font(FR).fontSize(10.5).fillColor(C.TEXT)
+            .text(
+                'CSIA (Cybersecurity Strategy for Artificial Intelligence) es la estrategia ' +
+                'desarrollada por Gamma Ingenieros para apoyar a las organizaciones en la ' +
+                'adopción segura de inteligencia artificial mediante controles de gobernanza ' +
+                'y ciberseguridad. Integra prácticas de marcos internacionales para construir ' +
+                'un modelo operativo de evaluación, control de riesgos y mejora continua en IA.',
+                MARGIN, cy, { width: CONTENT_W, align: 'justify', lineGap: 3 });
+        cy += 80;
 
-        const quickWins = llmData?.improvementPlan?.quickWins ?? [];
-        if (quickWins.length > 0) {
-            quickWins.forEach((item, idx) => {
-                // Row bg (alternating)
-                doc.rect(MARGIN, iy, CONTENT_W, 4).fill(idx % 2 === 0 ? '#F0F4FA' : C.WHITE);
-                iy += 5;
-                doc.fontSize(10).fillColor(C.STEEL).font(FONT_BOLD)
-                    .text(`${idx + 1}.`, MARGIN + 4, iy, { lineBreak: false });
-                doc.fontSize(12).fillColor(C.TEXT).font(FONT_REG)
-                    .text(item, MARGIN + 22, iy, { width: CONTENT_W - 22, align: 'justify', lineGap: 2 });
-                iy += doc.heightOfString(item, { width: CONTENT_W - 22 }) + 10;
-            });
-        } else {
-            doc.fontSize(12).fillColor(C.SILVER).font(FONT_ITAL)
-                .text(FALLBACK, MARGIN, iy, { width: CONTENT_W, lineGap: 2 });
-            iy += 22;
+        secLabel('MARCOS DE REFERENCIA INTEGRADOS', MARGIN, cy);
+        cy += 16;
+
+        const frameworks = [
+            {
+                name: 'NIST AI Risk Management Framework',
+                desc: 'Framework desarrollado por el NIST para gestionar riesgos de sistemas de inteligencia artificial mediante las funciones Govern, Map, Measure y Manage. Provee un vocabulario común para abordar los riesgos de la IA a lo largo de su ciclo de vida.',
+                color: C.STEEL,
+            },
+            {
+                name: 'MITRE ATLAS',
+                desc: 'Base de conocimiento que documenta tácticas, técnicas y procedimientos de ataque adversarial contra sistemas de Machine Learning. Permite a las organizaciones diseñar controles preventivos frente a amenazas específicas de la IA.',
+                color: C.LATENT,
+            },
+            {
+                name: 'Gartner TRiSM',
+                desc: 'Modelo de gobernanza enfocado en Trust, Risk and Security Management aplicado a sistemas de IA empresariales. Orienta hacia la gestión estructurada de la confiabilidad, la seguridad y el riesgo en entornos de adopción de IA.',
+                color: C.CONTROLLED,
+            },
+        ];
+
+        for (const fw of frameworks) {
+            const fwInnerW = CONTENT_W - 22;
+            const fwH = doc.heightOfString(fw.desc, { width: fwInnerW, lineGap: 2 }) + 36;
+            doc.rect(MARGIN, cy, CONTENT_W, fwH).fill(C.WHITE);
+            doc.rect(MARGIN, cy, 3, fwH).fill(fw.color);
+            doc.font(FB).fontSize(10).fillColor(C.TEXT)
+                .text(fw.name, MARGIN + 14, cy + 10, { lineBreak: false });
+            doc.font(FR).fontSize(9.5).fillColor(C.TEXT_MUTED)
+                .text(fw.desc, MARGIN + 14, cy + 26, { width: fwInnerW, lineGap: 2 });
+            cy += fwH + 10;
         }
 
-        iy += 18;
+        /* ══════════════════════════════════════════════════════════════════════
+           PAGE 4 — RESUMEN DE PUNTAJES
+        ══════════════════════════════════════════════════════════════════════ */
 
-        // Long-term header
-        doc.rect(MARGIN, iy, CONTENT_W, 30).fill(C.NAVY);
-        doc.rect(MARGIN, iy, 4, 30).fill(C.GOLD);
-        doc.fontSize(11).fillColor(C.WHITE).font(FONT_BOLD)
-            .text('Prioridades Estratégicas  ·  Iniciativas > 90 días', MARGIN + 12, iy + 9,
-                { width: CONTENT_W - 12, lineBreak: false });
-        iy += 38;
-
-        const longTerm = llmData?.improvementPlan?.longTerm ?? [];
-        if (longTerm.length > 0) {
-            longTerm.forEach((item, idx) => {
-                doc.rect(MARGIN, iy, CONTENT_W, 4).fill(idx % 2 === 0 ? '#F5F5F0' : C.WHITE);
-                iy += 5;
-                doc.fontSize(10).fillColor(C.GOLD).font(FONT_BOLD)
-                    .text(`${idx + 1}.`, MARGIN + 4, iy, { lineBreak: false });
-                doc.fontSize(12).fillColor(C.TEXT).font(FONT_REG)
-                    .text(item, MARGIN + 22, iy, { width: CONTENT_W - 22, align: 'justify', lineGap: 2 });
-                iy += doc.heightOfString(item, { width: CONTENT_W - 22 }) + 10;
-            });
-        } else {
-            doc.fontSize(12).fillColor(C.SILVER).font(FONT_ITAL)
-                .text(FALLBACK, MARGIN, iy, { width: CONTENT_W, lineGap: 2 });
-        }
-
-        // ════════════════════════════════════════════════════════════════════
-        // PAGE 5: BENCHMARKING
-        // ════════════════════════════════════════════════════════════════════
         doc.addPage();
-        addHeader('Benchmarking Sectorial');
+        pageBg();
+        addHeader('Resumen de Puntajes');
 
-        let by = CONTENT_Y + 4;
+        let sy = CONTENT_Y;
 
-        // Section title
-        by = drawSectionTitle(doc,
-            `Posición Relativa: ${assessment.client.name}`, by, C.GOLD, FONT_BOLD);
+        /* Table header row */
+        doc.rect(MARGIN, sy, CONTENT_W, 26).fill(C.NAVY);
+        doc.font(FB).fontSize(8.5).fillColor(C.WHITE)
+            .text('PILAR',    MARGIN + 14,  sy + 8, { lineBreak: false });
+        doc.font(FB).fontSize(8.5).fillColor(C.WHITE)
+            .text('PUNTUACIÓN', MARGIN + 270, sy + 8, { lineBreak: false });
+        doc.font(FB).fontSize(8.5).fillColor(C.WHITE)
+            .text('MADUREZ',  MARGIN + 370, sy + 8, { lineBreak: false });
+        sy += 26;
 
-        // Maturity progression bar — 5 equal segments within content width
-        const levels   = ['Experimental', 'Emergente', 'Definido', 'Gestionado', 'Optimizado'];
-        const segCount = levels.length;
-        const segGap   = 3;
-        const segW     = Math.floor((CONTENT_W - segGap * (segCount - 1)) / segCount); // ~97px
+        assessment.pillarScores.forEach((ps, idx) => {
+            const rowH   = 38;
+            const score  = Number(ps.score);
+            const rowBg  = idx % 2 === 0 ? C.WHITE : C.ROW_ALT;
+            doc.rect(MARGIN, sy, CONTENT_W, rowH).fill(rowBg);
+            doc.rect(MARGIN, sy, 3, rowH).fill(scoreColor(score));
 
-        levels.forEach((lbl, i) => {
-            const sx       = MARGIN + i * (segW + segGap);
-            const isActive = (assessment.maturityLevel ?? 1) === i + 1;
+            /* Pillar name */
+            doc.font(FB).fontSize(9).fillColor(C.TEXT)
+                .text(ps.pillar.name, MARGIN + 12, sy + 7, { lineBreak: false });
+            doc.font(FR).fontSize(7.5).fillColor(C.TEXT_LIGHT)
+                .text(ps.pillar.key, MARGIN + 12, sy + 22, { lineBreak: false });
 
-            doc.rect(sx, by, segW, 30).fill(isActive ? C.STEEL : '#E8ECF0');
-            if (isActive) {
-                doc.rect(sx, by, segW, 3).fill(C.GOLD);
-            }
-            doc.fontSize(7.5)
-                .fillColor(isActive ? C.WHITE : C.TEXT_MUTED)
-                .font(isActive ? FONT_BOLD : FONT_REG)
-                .text(lbl, sx, by + 11, { width: segW, align: 'center', lineBreak: false });
+            /* Score bar + value */
+            drawScoreBar(MARGIN + 270, sy + 15, score, 80, 7);
+            doc.font(FB).fontSize(10).fillColor(scoreColor(score))
+                .text(score.toFixed(2), MARGIN + 357, sy + 10, { lineBreak: false });
+
+            /* Maturity label */
+            doc.font(FR).fontSize(9).fillColor(C.TEXT_MUTED)
+                .text(scoreToMaturity(score), MARGIN + 370, sy + 14, { lineBreak: false });
+
+            sy += rowH;
         });
 
-        // Arrow label below active segment
-        const activeIdx = (assessment.maturityLevel ?? 1) - 1;
-        const arrowX    = MARGIN + activeIdx * (segW + segGap) + segW / 2 - 20;
-        doc.fontSize(7).fillColor(C.STEEL).font(FONT_BOLD)
-            .text('▲ Nivel actual', arrowX, by + 33, { width: 40, align: 'center', lineBreak: false });
+        /* Overall summary row */
+        sy += 10;
+        doc.rect(MARGIN, sy, CONTENT_W, 48).fill(C.NAVY);
+        const overallScore = assessment.overallScore?.toFixed(2) ?? '—';
+        const overallMat   = MATURITY_LABEL[matLevel ?? 0] ?? '—';
+        const overallRisk  = RISK_LABEL[riskLevel ?? ''] ?? '—';
+        const riskCol      = RISK_COLOR[riskLevel ?? ''] ?? C.MEDIUM;
 
-        by += 55;
+        doc.font(FB).fontSize(8).fillColor(C.SILVER)
+            .text('SCORE GENERAL', MARGIN + 14, sy + 8, { lineBreak: false });
+        doc.font(FB).fontSize(22).fillColor(C.GOLD)
+            .text(overallScore, MARGIN + 14, sy + 18, { lineBreak: false });
+        doc.font(FR).fontSize(8).fillColor(C.SILVER)
+            .text('/ 4.0', MARGIN + 80, sy + 28, { lineBreak: false });
 
-        // Benchmark text
-        doc.fontSize(12).fillColor(C.TEXT_MUTED).font(FONT_REG)
-            .text(llmData?.industryBenchmark ?? FALLBACK, MARGIN, by,
-                { align: 'justify', width: CONTENT_W, lineGap: 2 });
-        by += doc.heightOfString(llmData?.industryBenchmark ?? FALLBACK, { width: CONTENT_W }) + 24;
+        doc.font(FB).fontSize(8).fillColor(C.SILVER)
+            .text('NIVEL DE MADUREZ', MARGIN + 200, sy + 8, { lineBreak: false });
+        doc.font(FB).fontSize(13).fillColor(C.WHITE)
+            .text(overallMat, MARGIN + 200, sy + 22, { lineBreak: false });
 
-        // LLM attribution note
-        if (llmData) {
-            doc.rect(MARGIN, by, CONTENT_W, 28).fill('#F0F4F8');
-            doc.rect(MARGIN, by, 3, 28).fill(C.STEEL);
-            doc.fontSize(8).fillColor(C.TEXT_MUTED).font(FONT_REG)
-                .text(
-                    `Análisis generado por GammIA · Para uso interno exclusivo.`,
-                    MARGIN + 10, by + 9,
-                    { width: CONTENT_W - 14, align: 'center', lineBreak: false });
+        doc.font(FB).fontSize(8).fillColor(C.SILVER)
+            .text('RIESGO GLOBAL', MARGIN + 360, sy + 8, { lineBreak: false });
+        doc.font(FB).fontSize(13).fillColor(riskCol)
+            .text(overallRisk, MARGIN + 360, sy + 22, { lineBreak: false });
+
+        /* ══════════════════════════════════════════════════════════════════════
+           PAGE 5+ — ANÁLISIS POR PILAR
+        ══════════════════════════════════════════════════════════════════════ */
+
+        doc.addPage();
+        pageBg();
+        addHeader('Análisis por Pilar');
+
+        let py = CONTENT_Y;
+
+        for (const ps of assessment.pillarScores) {
+            const pillarLLM = llmData?.pillarAnalyses?.[ps.pillar.key];
+            const score     = Number(ps.score);
+            const innerW    = CONTENT_W - 24;
+
+            const fH = doc.heightOfString(pillarLLM?.findings       ?? FALLBACK, { width: innerW, lineGap: 2 });
+            const gH = doc.heightOfString(pillarLLM?.gaps            ?? FALLBACK, { width: innerW, lineGap: 2 });
+            const rH = doc.heightOfString(pillarLLM?.recommendation  ?? FALLBACK, { width: innerW, lineGap: 2 });
+            const cardH = 52 + fH + gH + rH + 72; /* header + 3×(label+gap) + sections */
+
+            if (py + cardH > FOOTER_Y - 20) {
+                doc.addPage();
+                pageBg();
+                addHeader('Análisis por Pilar (cont.)');
+                py = CONTENT_Y;
+            }
+
+            /* Card */
+            doc.rect(MARGIN, py, CONTENT_W, cardH).fill(C.WHITE);
+            doc.rect(MARGIN, py, 4, cardH).fill(scoreColor(score));
+
+            /* Card header */
+            doc.font(FB).fontSize(11).fillColor(C.TEXT)
+                .text(ps.pillar.name, MARGIN + 14, py + 10, { lineBreak: false });
+            doc.font(FB).fontSize(10).fillColor(scoreColor(score))
+                .text(`${score.toFixed(2)} / 4.0`, MARGIN + 14, py + 10,
+                    { width: CONTENT_W - 28, align: 'right', lineBreak: false });
+
+            drawScoreBar(MARGIN + 14, py + 30, score, 160, 6);
+            doc.font(FR).fontSize(8.5).fillColor(C.TEXT_LIGHT)
+                .text(scoreToMaturity(score), MARGIN + 182, py + 29, { lineBreak: false });
+
+            let cy2 = py + 50;
+
+            /* Findings */
+            secLabel('HALLAZGOS', MARGIN + 14, cy2);
+            cy2 += 12;
+            doc.font(FR).fontSize(9.5).fillColor(C.TEXT_MUTED)
+                .text(pillarLLM?.findings ?? FALLBACK, MARGIN + 14, cy2, { width: innerW, lineGap: 2 });
+            cy2 += fH + 12;
+
+            /* Gaps */
+            secLabel('BRECHAS IDENTIFICADAS', MARGIN + 14, cy2);
+            cy2 += 12;
+            doc.font(FR).fontSize(9.5).fillColor(C.TEXT_MUTED)
+                .text(pillarLLM?.gaps ?? FALLBACK, MARGIN + 14, cy2, { width: innerW, lineGap: 2 });
+            cy2 += gH + 12;
+
+            /* Recommendation */
+            doc.font(FB).fontSize(7.5).fillColor(C.STEEL)
+                .text('RECOMENDACIÓN', MARGIN + 14, cy2, { lineBreak: false });
+            cy2 += 12;
+            doc.font(FR).fontSize(9.5).fillColor(C.TEXT)
+                .text(pillarLLM?.recommendation ?? FALLBACK, MARGIN + 14, cy2, { width: innerW, lineGap: 2 });
+
+            py += cardH + 12;
         }
 
-        // ════════════════════════════════════════════════════════════════════
-        // FOOTERS — applied to all pages except cover
-        // ════════════════════════════════════════════════════════════════════
+        /* ══════════════════════════════════════════════════════════════════════
+           LAST PAGE — PLAN DE MEJORA
+        ══════════════════════════════════════════════════════════════════════ */
+
+        doc.addPage();
+        pageBg();
+        addHeader('Plan de Mejora');
+
+        let iy = CONTENT_Y;
+
+        const quickWins = llmData?.improvementPlan?.quickWins ?? [];
+        const longTerm  = llmData?.improvementPlan?.longTerm  ?? [];
+
+        const drawItems = (items: string[], badgeColor: string, sectionLabel: string) => {
+            if (items.length === 0) return;
+            secLabel(sectionLabel, MARGIN, iy);
+            iy += 16;
+            items.forEach((text, i) => {
+                if (iy > FOOTER_Y - 60) {
+                    doc.addPage();
+                    pageBg();
+                    addHeader('Plan de Mejora (cont.)');
+                    iy = CONTENT_Y;
+                }
+                const itemH  = doc.heightOfString(text, { width: CONTENT_W - 46, lineGap: 2 });
+                const blockH = Math.max(itemH + 16, 32);
+
+                doc.rect(MARGIN, iy, CONTENT_W, blockH).fill(C.WHITE);
+                /* Number badge */
+                doc.rect(MARGIN + 8, iy + (blockH - 22) / 2, 22, 22).fill(badgeColor);
+                doc.font(FB).fontSize(8.5).fillColor(C.WHITE)
+                    .text(`${i + 1}`, MARGIN + 8, iy + (blockH - 22) / 2 + 6,
+                        { width: 22, align: 'center', lineBreak: false });
+                /* Text */
+                doc.font(FR).fontSize(9.5).fillColor(C.TEXT)
+                    .text(text, MARGIN + 38, iy + 8, { width: CONTENT_W - 46, lineGap: 2 });
+
+                iy += blockH + 6;
+            });
+            iy += 12;
+        };
+
+        if (quickWins.length > 0 || longTerm.length > 0) {
+            drawItems(quickWins, C.CONTROLLED, 'ACCIONES INMEDIATAS (QUICK WINS)');
+            drawItems(longTerm,  C.STEEL,      'INICIATIVAS A LARGO PLAZO');
+        } else {
+            doc.font(FR).fontSize(10.5).fillColor(C.TEXT_LIGHT)
+                .text(FALLBACK, MARGIN, iy, { width: CONTENT_W });
+        }
+
+        /* ══════════════════════════════════════════════════════════════════════
+           FOOTERS (all interior pages)
+        ══════════════════════════════════════════════════════════════════════ */
+
         const range = doc.bufferedPageRange();
         const total = range.count;
         for (let i = range.start; i < range.start + total; i++) {
@@ -551,47 +573,4 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
 
         doc.end();
     });
-}
-
-// ─── Helper: section title with left accent bar ────────────────────────────────
-function drawSectionTitle(
-    doc: PDFKit.PDFDocument,
-    title: string,
-    y: number,
-    accentColor: string,
-    fontBold: string
-): number {
-    doc.rect(MARGIN, y, 3, 18).fill(accentColor);
-    doc.fontSize(13).fillColor('#1A2035').font(fontBold)
-        .text(title, MARGIN + 10, y + 2,
-            { width: CONTENT_W - 10, lineBreak: false });
-    return y + 26;
-}
-
-// ─── Helper: metric card ───────────────────────────────────────────────────────
-function drawCard(
-    doc: PDFKit.PDFDocument,
-    x: number, y: number, w: number, h: number,
-    title: string, value: string, sub: string,
-    accentColor: string,
-    fontReg: string, fontBold: string
-) {
-    // Shadow
-    doc.roundedRect(x + 2, y + 2, w, h, 8).fill('#E0E6EE');
-    // Card body
-    doc.roundedRect(x, y, w, h, 8).fill('#FFFFFF').stroke('#D1D9E0');
-    // Top accent stripe
-    doc.rect(x + 1, y + 1, w - 2, 4).fill(accentColor);
-
-    doc.fontSize(7.5).fillColor('#4A5568').font(fontBold)
-        .text(title.toUpperCase(), x, y + 16,
-            { width: w, align: 'center', characterSpacing: 0.4, lineBreak: false });
-
-    doc.fontSize(24).fillColor(accentColor).font(fontBold)
-        .text(value, x, y + 34, { width: w, align: 'center', lineBreak: false });
-
-    if (sub) {
-        doc.fontSize(8.5).fillColor('#9AAAB8').font(fontReg)
-            .text(sub, x, y + 72, { width: w, align: 'center', lineBreak: false });
-    }
 }

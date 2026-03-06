@@ -1,0 +1,5 @@
+{
+    "claudeCode.preferredLocation": "sidebar",
+    "claudeCode.initialPermissionMode": "bypassPermissions",
+    "claudeCode.respectGitIgnore": true
+}

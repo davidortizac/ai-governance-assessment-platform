@@ -8,16 +8,24 @@ analyticsRouter.use(authenticate as any);
 
 // GET /api/analytics/risk-trends
 // Returns historical risk level distribution over time (grouped by month)
+// Optional query param: ?clientId=xxx to filter by a specific client
 analyticsRouter.get('/risk-trends', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
         const { tenantId, role, userId } = req.user!;
+        const { clientId } = req.query as { clientId?: string };
         const where: any = { status: 'COMPLETED' };
 
         // Data isolation
         if (role === 'ADMIN') {
-            if (tenantId) where.client = { tenantId };
+            if (clientId) {
+                where.clientId = clientId;
+                where.client = { tenantId };
+            } else if (tenantId) {
+                where.client = { tenantId };
+            }
         } else {
             where.createdById = userId;
+            if (clientId) where.clientId = clientId;
         }
 
         const assessments = await prisma.assessment.findMany({
@@ -50,16 +58,23 @@ analyticsRouter.get('/risk-trends', async (req: AuthRequest, res: Response): Pro
 
 // GET /api/analytics/pillar-averages
 // Returns average score per pillar for all completed assessments in scope.
-// Used by the framework benchmark view.
+// Optional query param: ?clientId=xxx to filter by a specific client
 analyticsRouter.get('/pillar-averages', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
         const { tenantId, role, userId } = req.user!;
+        const { clientId } = req.query as { clientId?: string };
         const where: any = { status: 'COMPLETED' };
 
         if (role === 'ADMIN') {
-            if (tenantId) where.client = { tenantId };
+            if (clientId) {
+                where.clientId = clientId;
+                where.client = { tenantId };
+            } else if (tenantId) {
+                where.client = { tenantId };
+            }
         } else {
             where.createdById = userId;
+            if (clientId) where.clientId = clientId;
         }
 
         const pillarScores = await prisma.pillarScore.findMany({

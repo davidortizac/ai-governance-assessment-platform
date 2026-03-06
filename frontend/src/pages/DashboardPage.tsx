@@ -1,14 +1,20 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../lib/api';
-import RadarChart from '../components/RadarChart';
 
-const RISK_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
-    CONTROLLED: { label: 'Controlado', color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
-    LOW: { label: 'Bajo', color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
-    MEDIUM: { label: 'Medio', color: 'text-amber-400', bg: 'bg-amber-500/10' },
-    HIGH: { label: 'Alto', color: 'text-red-400', bg: 'bg-red-500/10' },
-    CRITICAL: { label: 'Crítico', color: 'text-red-500', bg: 'bg-red-500/10' },
-    LATENT: { label: 'Latente', color: 'text-violet-400', bg: 'bg-violet-500/10' },
+const STATUS_STYLE: Record<string, { color: string; label: string }> = {
+    COMPLETED:   { color: 'text-emerald-400', label: 'Completado'   },
+    IN_PROGRESS: { color: 'text-amber-400',   label: 'En progreso'  },
+    DRAFT:       { color: 'text-surface-500', label: 'Borrador'     },
+};
+
+const RISK_CONFIG: Record<string, { label: string; color: string }> = {
+    CONTROLLED: { label: 'Controlado', color: 'text-emerald-400' },
+    LOW:        { label: 'Bajo',        color: 'text-emerald-400' },
+    MEDIUM:     { label: 'Medio',       color: 'text-amber-400'   },
+    HIGH:       { label: 'Alto',        color: 'text-red-400'     },
+    CRITICAL:   { label: 'Crítico',     color: 'text-red-500'     },
+    LATENT:     { label: 'Latente',     color: 'text-violet-400'  },
 };
 
 const MATURITY_LABELS: Record<number, string> = {
@@ -19,25 +25,58 @@ const MATURITY_LABELS: Record<number, string> = {
     5: 'Optimizado',
 };
 
+interface Assessment {
+    id: string;
+    type: string;
+    status: string;
+    overallScore: number | null;
+    maturityLevel: number | null;
+    riskLevel: string | null;
+    completedAt: string | null;
+    createdAt: string;
+}
+
+interface ClientData {
+    id: string;
+    name: string;
+    industry: string | null;
+    contactEmail: string | null;
+    contactName: string | null;
+    assessments: Assessment[];
+}
+
 interface DashboardStats {
     totalClients: number;
     totalAssessments: number;
     completedAssessments: number;
     avgMaturityScore: number;
-    riskDistribution: { level: string; count: number }[];
-    recentAssessments: any[];
 }
 
 export default function DashboardPage() {
     const [stats, setStats] = useState<DashboardStats | null>(null);
+    const [clients, setClients] = useState<ClientData[]>([]);
     const [loading, setLoading] = useState(true);
+    const [search, setSearch] = useState('');
+    const navigate = useNavigate();
 
     useEffect(() => {
-        api.get('/dashboard/stats')
-            .then(res => setStats(res.data))
+        Promise.all([
+            api.get('/dashboard/stats'),
+            api.get('/dashboard/clients'),
+        ])
+            .then(([statsRes, clientsRes]) => {
+                setStats(statsRes.data);
+                setClients(clientsRes.data);
+            })
             .catch(console.error)
             .finally(() => setLoading(false));
     }, []);
+
+    const filtered = clients.filter(c => {
+        if (search.trim() === '') return true;
+        const q = search.toLowerCase();
+        return c.name.toLowerCase().includes(q) || (c.industry ?? '').toLowerCase().includes(q);
+    });
 
     if (loading) {
         return (
@@ -47,140 +86,195 @@ export default function DashboardPage() {
         );
     }
 
-    if (!stats) return null;
-
-    // Get the latest assessment for the radar chart
-    const latestAssessment = stats.recentAssessments[0];
-    const radarLabels = latestAssessment?.pillarScores?.map((ps: any) => ps.pillar.name) || [];
-    const radarData = latestAssessment?.pillarScores?.map((ps: any) => ps.score) || [];
-
-    const maturityLevel = Math.round(stats.avgMaturityScore) || 0;
-    const maturityLabel = stats.avgMaturityScore < 1 ? 'Experimental'
-        : stats.avgMaturityScore < 2 ? 'Emergente'
-            : stats.avgMaturityScore < 3 ? 'Definido'
-                : stats.avgMaturityScore <= 3.5 ? 'Gestionado'
-                    : 'Optimizado';
-
     return (
         <div className="space-y-6 fade-in">
             <div>
                 <h1 className="text-2xl font-bold text-surface-100">Dashboard</h1>
-                <p className="text-sm text-surface-500 mt-1">Resumen general de evaluaciones de madurez en IA</p>
+                <p className="text-sm text-surface-500 mt-1">Clientes y evolución de sus evaluaciones de madurez en IA</p>
             </div>
 
-            {/* Stat Cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Stat cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="stat-card" style={{ '--accent-from': '#3B82F6', '--accent-to': '#06B6D4' } as React.CSSProperties}>
                     <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Clientes</p>
-                    <p className="text-3xl font-bold text-surface-100 mt-2">{stats.totalClients}</p>
+                    <p className="text-3xl font-bold text-surface-100 mt-2">{stats?.totalClients ?? 0}</p>
                     <p className="text-xs text-surface-500 mt-1">Organizaciones registradas</p>
                 </div>
                 <div className="stat-card" style={{ '--accent-from': '#8B5CF6', '--accent-to': '#EC4899' } as React.CSSProperties}>
-                    <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Evaluaciones</p>
-                    <p className="text-3xl font-bold text-surface-100 mt-2">{stats.completedAssessments}</p>
-                    <p className="text-xs text-surface-500 mt-1">de {stats.totalAssessments} totales completadas</p>
+                    <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Evaluaciones Completadas</p>
+                    <p className="text-3xl font-bold text-surface-100 mt-2">{stats?.completedAssessments ?? 0}</p>
+                    <p className="text-xs text-surface-500 mt-1">de {stats?.totalAssessments ?? 0} totales</p>
                 </div>
                 <div className="stat-card" style={{ '--accent-from': '#10B981', '--accent-to': '#06B6D4' } as React.CSSProperties}>
                     <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Score Promedio</p>
-                    <p className="text-3xl font-bold text-surface-100 mt-2">{stats.avgMaturityScore}</p>
+                    <p className="text-3xl font-bold text-surface-100 mt-2">{stats?.avgMaturityScore ?? '—'}</p>
                     <p className="text-xs text-surface-500 mt-1">de 4.0 posibles</p>
-                </div>
-                <div className="stat-card" style={{ '--accent-from': '#F59E0B', '--accent-to': '#EF4444' } as React.CSSProperties}>
-                    <p className="text-xs font-medium text-surface-500 uppercase tracking-wider">Madurez Promedio</p>
-                    <p className="text-3xl font-bold text-surface-100 mt-2">Nivel {maturityLevel || '-'}</p>
-                    <p className="text-xs text-surface-500 mt-1">{maturityLabel}</p>
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Radar Chart */}
-                <div className="glass-card p-6">
-                    <h3 className="text-lg font-semibold text-surface-100 mb-4">
-                        Radar de Madurez por Pilar
-                    </h3>
-                    {radarLabels.length > 0 ? (
-                        <div className="max-w-md mx-auto">
-                            <RadarChart
-                                labels={radarLabels}
-                                datasets={[{
-                                    label: latestAssessment?.client?.name || 'Última evaluación',
-                                    data: radarData,
-                                }]}
-                            />
-                        </div>
-                    ) : (
-                        <div className="h-64 flex items-center justify-center text-surface-500 text-sm">
-                            No hay evaluaciones completadas aún
-                        </div>
-                    )}
-                </div>
+            {/* Search + header */}
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                <input
+                    type="text"
+                    value={search}
+                    onChange={e => setSearch(e.target.value)}
+                    placeholder="Buscar cliente o industria..."
+                    className="input-field max-w-sm"
+                />
+                <span className="text-xs text-surface-500">{filtered.length} cliente{filtered.length === 1 ? '' : 's'}</span>
+            </div>
 
-                {/* Risk Distribution + Recent */}
-                <div className="space-y-6">
-                    {/* Risk Distribution */}
-                    <div className="glass-card p-6">
-                        <h3 className="text-lg font-semibold text-surface-100 mb-4">Distribución de Riesgo</h3>
-                        {stats.riskDistribution.length > 0 ? (
-                            <div className="space-y-3">
-                                {stats.riskDistribution.map((r) => {
-                                    const config = RISK_CONFIG[r.level || 'MEDIUM'];
-                                    const total = stats.riskDistribution.reduce((s, x) => s + x.count, 0);
-                                    const pct = total > 0 ? (r.count / total) * 100 : 0;
-                                    return (
-                                        <div key={r.level} className="flex items-center gap-3">
-                                            <span className={`text-sm font-medium w-24 ${config?.color}`}>
-                                                {config?.label || r.level}
-                                            </span>
-                                            <div className="flex-1 h-3 bg-surface-800 rounded-full overflow-hidden">
-                                                <div
-                                                    className={`h-full rounded-full ${config?.bg} transition-all duration-500`}
-                                                    style={{
-                                                        width: `${pct}%`,
-                                                        backgroundColor: config?.color?.includes('emerald') ? '#10B981'
-                                                            : config?.color?.includes('amber') ? '#F59E0B'
-                                                                : config?.color?.includes('violet') ? '#8B5CF6'
-                                                                    : '#EF4444',
-                                                    }}
-                                                />
-                                            </div>
-                                            <span className="text-sm font-semibold text-surface-300 w-8 text-right">{r.count}</span>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        ) : (
-                            <p className="text-sm text-surface-500">Sin datos de riesgo</p>
-                        )}
+            {/* Client cards */}
+            <div className="space-y-4">
+                {filtered.length === 0 && (
+                    <div className="glass-card p-12 text-center text-surface-500 text-sm">
+                        No se encontraron clientes
                     </div>
+                )}
 
-                    {/* Recent Assessments */}
-                    <div className="glass-card p-6">
-                        <h3 className="text-lg font-semibold text-surface-100 mb-4">Evaluaciones Recientes</h3>
-                        {stats.recentAssessments.length > 0 ? (
-                            <div className="space-y-3">
-                                {stats.recentAssessments.slice(0, 4).map((a: any) => {
-                                    const riskCfg = RISK_CONFIG[a.riskLevel || 'MEDIUM'];
-                                    return (
-                                        <div key={a.id} className="flex items-center justify-between p-3 rounded-lg bg-surface-800/30 hover:bg-surface-800/50 transition-colors">
-                                            <div>
-                                                <p className="text-sm font-medium text-surface-200">{a.client?.name}</p>
-                                                <p className="text-xs text-surface-500">
-                                                    {a.type} · {new Date(a.completedAt).toLocaleDateString('es-ES')}
-                                                </p>
-                                            </div>
-                                            <div className="text-right">
-                                                <p className="text-sm font-bold text-surface-200">{a.overallScore?.toFixed(2)}</p>
-                                                <span className={`text-xs ${riskCfg?.color}`}>{riskCfg?.label}</span>
-                                            </div>
-                                        </div>
-                                    );
-                                })}
+                {filtered.map(client => {
+                    // Sort assessments oldest → newest to assign version numbers
+                    const sorted = [...client.assessments].sort(
+                        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+                    );
+
+                    // Score trend between last two completed assessments
+                    const completed = sorted.filter(a => a.status === 'COMPLETED');
+                    const latest = completed[completed.length - 1];
+                    const prev   = completed[completed.length - 2];
+                    const scoreDelta =
+                        latest?.overallScore != null && prev?.overallScore != null
+                            ? Number(latest.overallScore) - Number(prev.overallScore)
+                            : null;
+
+                    return (
+                        <div key={client.id} className="glass-card overflow-hidden">
+
+                            {/* ── Card header: click → AssessmentsPage filtered by client ── */}
+                            <button
+                                type="button"
+                                className="w-full flex items-center justify-between px-6 py-4 border-b border-surface-700/50 cursor-pointer hover:bg-surface-800/30 transition-colors text-left"
+                                onClick={() => navigate(`/assessments?clientId=${client.id}`)}
+                                title="Ver todas las evaluaciones de este cliente"
+                            >
+                                <div className="flex items-center gap-3 min-w-0">
+                                    {/* Avatar letter */}
+                                    <div className="w-9 h-9 rounded-lg bg-primary-500/10 flex items-center justify-center flex-shrink-0">
+                                        <span className="text-primary-400 font-bold text-sm">
+                                            {client.name.charAt(0).toUpperCase()}
+                                        </span>
+                                    </div>
+                                    <div className="min-w-0">
+                                        <p className="text-sm font-semibold text-surface-100 truncate">{client.name}</p>
+                                        <p className="text-xs text-surface-500 truncate">
+                                            {client.contactEmail || client.contactName || '—'}
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <div className="flex items-center gap-3 flex-shrink-0 ml-4">
+                                    {client.industry && (
+                                        <span className="badge-info text-xs hidden sm:inline">{client.industry}</span>
+                                    )}
+                                    {/* Score trend indicator */}
+                                    {scoreDelta !== null && (
+                                        <span className={`text-xs font-semibold ${scoreDelta >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                            {scoreDelta >= 0 ? '▲' : '▼'} {Math.abs(scoreDelta).toFixed(2)}
+                                        </span>
+                                    )}
+                                    <span className="text-xs text-surface-500">{client.assessments.length} eval.</span>
+                                    <span className="text-surface-500 text-sm">→</span>
+                                </div>
+                            </button>
+
+                            {/* ── Assessment history table ── */}
+                            {sorted.length > 0 ? (
+                                <div className="overflow-x-auto">
+                                    <table className="w-full">
+                                        <thead>
+                                            <tr className="border-b border-surface-800/40">
+                                                <th className="text-left px-6 py-2 text-xs text-surface-500 font-medium w-12">Ver.</th>
+                                                <th className="text-left px-6 py-2 text-xs text-surface-500 font-medium">Tipo</th>
+                                                <th className="text-left px-6 py-2 text-xs text-surface-500 font-medium">Fecha</th>
+                                                <th className="text-left px-6 py-2 text-xs text-surface-500 font-medium">Score</th>
+                                                <th className="text-left px-6 py-2 text-xs text-surface-500 font-medium hidden md:table-cell">Madurez</th>
+                                                <th className="text-left px-6 py-2 text-xs text-surface-500 font-medium hidden lg:table-cell">Riesgo</th>
+                                                <th className="text-left px-6 py-2 text-xs text-surface-500 font-medium">Estado</th>
+                                                <th className="px-6 py-2 w-28" />
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-surface-800/25">
+                                            {sorted.map((a, idx) => {
+                                                const risk        = RISK_CONFIG[a.riskLevel ?? ''];
+                                                const maturity    = a.maturityLevel ? MATURITY_LABELS[a.maturityLevel] : '—';
+                                                const date        = a.completedAt ?? a.createdAt;
+                                                const statusStyle = STATUS_STYLE[a.status] ?? STATUS_STYLE['DRAFT'];
+
+                                                return (
+                                                    <tr key={a.id} className="hover:bg-surface-800/20 transition-colors">
+                                                        <td className="px-6 py-3 text-xs text-surface-600 font-mono">v{idx + 1}</td>
+                                                        <td className="px-6 py-3 text-xs text-surface-400">{a.type}</td>
+                                                        <td className="px-6 py-3 text-xs text-surface-400 whitespace-nowrap">
+                                                            {new Date(date).toLocaleDateString('es-ES')}
+                                                        </td>
+                                                        <td className="px-6 py-3">
+                                                            {a.overallScore == null
+                                                                ? <span className="text-xs text-surface-600">—</span>
+                                                                : <span className="text-sm font-bold text-surface-200">{Number(a.overallScore).toFixed(2)}</span>
+                                                            }
+                                                        </td>
+                                                        <td className="px-6 py-3 text-xs text-surface-400 hidden md:table-cell">{maturity}</td>
+                                                        <td className="px-6 py-3 hidden lg:table-cell">
+                                                            {risk
+                                                                ? <span className={`text-xs font-medium ${risk.color}`}>{risk.label}</span>
+                                                                : <span className="text-xs text-surface-600">—</span>
+                                                            }
+                                                        </td>
+                                                        <td className="px-6 py-3">
+                                                            <span className={`text-xs font-medium ${statusStyle.color}`}>
+                                                                {statusStyle.label}
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-6 py-3 text-right">
+                                                            {a.status === 'COMPLETED' && (
+                                                                <button
+                                                                    onClick={() => navigate(`/assessments/${a.id}/results`)}
+                                                                    className="text-xs text-primary-400 hover:text-primary-300 font-medium"
+                                                                >
+                                                                    Ver resultados →
+                                                                </button>
+                                                            )}
+                                                            {a.status !== 'COMPLETED' && (
+                                                                <button
+                                                                    onClick={() => navigate(`/assessments/new?resume=${a.id}`)}
+                                                                    className="text-xs text-surface-500 hover:text-surface-400 font-medium"
+                                                                >
+                                                                    Continuar →
+                                                                </button>
+                                                            )}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ) : (
+                                <div className="px-6 py-5 text-xs text-surface-600">Sin evaluaciones registradas</div>
+                            )}
+
+                            {/* ── Card footer ── */}
+                            <div className="px-6 py-3 border-t border-surface-800/40 flex justify-end">
+                                <button
+                                    onClick={() => navigate('/assessments/new')}
+                                    className="text-xs text-primary-400 hover:text-primary-300 font-medium"
+                                >
+                                    + Nueva evaluación
+                                </button>
                             </div>
-                        ) : (
-                            <p className="text-sm text-surface-500">Sin evaluaciones recientes</p>
-                        )}
-                    </div>
-                </div>
+                        </div>
+                    );
+                })}
             </div>
         </div>
     );

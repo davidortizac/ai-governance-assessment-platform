@@ -11,13 +11,14 @@
 
 import https from 'https';
 import http from 'http';
+import { SYSTEM_PROMPT, AI_ASSESSMENT_PROMPT } from '../config/llmPrompt';
 
 // Read fresh from process.env on every call so runtime changes (model selection) take effect
-const getOllamaUrl     = () => process.env.OLLAMA_URL      ?? 'http://host.docker.internal:11434/v1/chat/completions';
-const getOllamaModel   = () => process.env.OLLAMA_MODEL    ?? 'deepseek-r1:8b';
+const getOllamaUrl = () => process.env.OLLAMA_URL ?? 'http://host.docker.internal:11434/v1/chat/completions';
+const getOllamaModel = () => process.env.OLLAMA_MODEL ?? 'deepseek-r1:8b';
 const getOllamaTimeout = () => parseInt(process.env.OLLAMA_TIMEOUT_MS ?? '300000', 10);
 // Optional API key — required for Google AI Studio, leave empty for Ollama
-const getLlmApiKey     = () => process.env.LLM_API_KEY     ?? '';
+const getLlmApiKey = () => process.env.LLM_API_KEY ?? '';
 
 /**
  * POST JSON to a URL using Node's native http/https.
@@ -26,10 +27,10 @@ const getLlmApiKey     = () => process.env.LLM_API_KEY     ?? '';
  */
 function httpPost(url: string, body: string, timeoutMs: number): Promise<{ status: number; body: string }> {
     return new Promise((resolve, reject) => {
-        const parsed   = new URL(url);
-        const isHttps  = parsed.protocol === 'https:';
-        const lib      = isHttps ? https : http;
-        const port     = parsed.port ? parseInt(parsed.port, 10) : (isHttps ? 443 : 80);
+        const parsed = new URL(url);
+        const isHttps = parsed.protocol === 'https:';
+        const lib = isHttps ? https : http;
+        const port = parsed.port ? parseInt(parsed.port, 10) : (isHttps ? 443 : 80);
 
         const apiKey = getLlmApiKey();
         const options: https.RequestOptions = {
@@ -38,7 +39,7 @@ function httpPost(url: string, body: string, timeoutMs: number): Promise<{ statu
             path: parsed.pathname + parsed.search,
             method: 'POST',
             headers: {
-                'Content-Type':   'application/json',
+                'Content-Type': 'application/json',
                 'Content-Length': Buffer.byteLength(body),
                 ...(apiKey && { 'Authorization': `Bearer ${apiKey}` }),
             },
@@ -68,10 +69,10 @@ function httpPost(url: string, body: string, timeoutMs: number): Promise<{ statu
  */
 function httpGet(url: string, timeoutMs: number): Promise<{ status: number; body: string }> {
     return new Promise((resolve, reject) => {
-        const parsed  = new URL(url);
+        const parsed = new URL(url);
         const isHttps = parsed.protocol === 'https:';
-        const lib     = isHttps ? https : http;
-        const port    = parsed.port ? parseInt(parsed.port, 10) : (isHttps ? 443 : 80);
+        const lib = isHttps ? https : http;
+        const port = parsed.port ? parseInt(parsed.port, 10) : (isHttps ? 443 : 80);
 
         const apiKey = getLlmApiKey();
         const options: https.RequestOptions = {
@@ -257,12 +258,12 @@ function buildPrompt(assessment: any): string {
                     const answerLabel = a.notApplicable
                         ? 'No Aplica'
                         : a.score === 1
-                        ? 'No iniciado (1)'
-                        : a.score === 3
-                        ? 'En progreso (3)'
-                        : a.score === 5
-                        ? 'Completado (5)'
-                        : `Score: ${a.score}`;
+                            ? 'No iniciado (1)'
+                            : a.score === 3
+                                ? 'En progreso (3)'
+                                : a.score === 5
+                                    ? 'Completado (5)'
+                                    : `Score: ${a.score}`;
                     pillarLines.push(`  - ${qText} → ${answerLabel}`);
                 }
             }
@@ -270,11 +271,11 @@ function buildPrompt(assessment: any): string {
     }
 
     const pillarSection = pillarLines.join('\n');
-    const activeModel = getOllamaModel();
 
-    return `Eres un experto consultor en ciberseguridad de inteligencia artificial analizando una evaluación de madurez CSIA.
-
-## Datos del Assessment
+    // Dynamic context appended to the static AI_ASSESSMENT_PROMPT (from config/llmPrompt.ts).
+    // To change analysis instructions or the JSON schema, edit config/llmPrompt.ts only.
+    const dynamicContext =
+`## Datos del Assessment
 
 **Cliente:** ${clientName}
 **Industria:** ${industry}
@@ -283,36 +284,9 @@ function buildPrompt(assessment: any): string {
 **Nivel de Riesgo:** ${riskLabel}
 
 ## Detalle por Pilar
-${pillarSection}
+${pillarSection}`;
 
-## Instrucciones
-
-Genera un análisis ejecutivo contextual basado ÚNICAMENTE en los datos anteriores.
-NO menciones productos de vendors específicos (no CrowdStrike, no Microsoft, no Palo Alto, etc.).
-Enfócate en principios y prácticas de ciberseguridad aplicables al contexto de ${clientName} en la industria ${industry}.
-
-Responde ÚNICAMENTE con el siguiente JSON válido (sin markdown, sin texto adicional, sin bloques de código):
-
-{
-  "generatedAt": "<ISO timestamp actual>",
-  "model": "${activeModel}",
-  "executiveSummary": "<3-5 oraciones de diagnóstico contextual basado en los datos reales>",
-  "awarenessMessage": "<Por qué la seguridad en IA es crítica para el sector ${industry}, basado en el perfil de riesgo detectado>",
-  "industryBenchmark": "<Comparación del nivel de madurez ${maturityLabel} con organizaciones típicas del sector ${industry}, sin inventar estadísticas>",
-  "improvementPlan": {
-    "quickWins": ["<acción concreta < 90 días>", "<acción>", "<acción>"],
-    "longTerm": ["<iniciativa estratégica > 90 días>", "<iniciativa>", "<iniciativa>"]
-  },
-  "pillarAnalyses": {
-    "<pillarKey>": {
-      "findings": "<hallazgo principal basado en el score y respuestas>",
-      "gaps": "<brechas específicas identificadas>",
-      "recommendation": "<recomendación accionable sin mencionar vendors>"
-    }
-  }
-}
-
-RECUERDA: Todos los textos del JSON deben estar escritos en español.`;
+    return `${AI_ASSESSMENT_PROMPT}\n\n${dynamicContext}`;
 }
 
 /** Call Ollama API and return structured LLMAnalysis. Throws on failure.
@@ -322,27 +296,20 @@ RECUERDA: Todos los textos del JSON deben estar escritos en español.`;
  */
 export async function generateLLMAnalysis(assessment: any, timeoutMs?: number): Promise<LLMAnalysis> {
     const prompt = buildPrompt(assessment);
-    const ollamaUrl     = getOllamaUrl();
-    const ollamaModel   = getOllamaModel();
+    const ollamaUrl = getOllamaUrl();
+    const ollamaModel = getOllamaModel();
     const ollamaTimeout = timeoutMs ?? getOllamaTimeout();
 
     const requestBody = JSON.stringify({
         model: ollamaModel,
         messages: [
-            {
-                role: 'system',
-                content:
-                    'Eres un experto consultor en ciberseguridad de inteligencia artificial. ' +
-                    'IMPORTANTE: Responde SIEMPRE en español. Todos los valores del JSON deben estar escritos en español. Nunca respondas en inglés. ' +
-                    'Responde ÚNICAMENTE con un objeto JSON válido, sin bloques de código, sin markdown, sin texto antes o después del JSON. ' +
-                    'CRÍTICO: todos los valores de string deben estar en una sola línea, sin saltos de línea literales dentro de los strings. ' +
-                    'Usa \\n (barra+n) si necesitas separar párrafos dentro de un string. ' +
-                    'No uses asteriscos, almohadillas ni ningún formato markdown dentro de los valores. ' +
-                    'No menciones productos de vendors específicos en tus recomendaciones.',
-            },
+            // System message loaded from config/llmPrompt.ts — edit there to change LLM behavior
+            { role: 'system', content: SYSTEM_PROMPT },
             { role: 'user', content: prompt },
         ],
         temperature: 0.3,
+        top_p: 0.9,
+        repeat_penalty: 1.1,
         stream: false,
         max_tokens: 8192,   // deepseek-r1 uses tokens for <think> blocks before JSON output
     });

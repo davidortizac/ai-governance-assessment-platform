@@ -3,10 +3,11 @@ import {
     Chart as ChartJS, CategoryScale, LinearScale, BarElement,
     PointElement, LineElement, Title, Tooltip, Legend,
 } from 'chart.js';
-import { Bar, Line } from 'react-chartjs-2';
+import { Bar } from 'react-chartjs-2';
 import api from '../lib/api';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineElement, Title, Tooltip, Legend);
+// Note: PointElement and LineElement kept for potential future use
 
 // ─── Framework definitions ────────────────────────────────────────────────────
 const FRAMEWORKS = {
@@ -45,26 +46,34 @@ const FRAMEWORKS = {
 type FrameworkKey = keyof typeof FRAMEWORKS;
 
 interface PillarAvg { key: string; name: string; avgScore: number; assessmentCount: number; }
+interface Client { id: string; name: string; }
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function AnalyticsPage() {
-    const [framework, setFramework]   = useState<FrameworkKey>('NIST_AI_RMF');
-    const [pillars, setPillars]       = useState<PillarAvg[]>([]);
-    const [riskTrends, setRiskTrends] = useState<any[]>([]);
-    const [loading, setLoading]       = useState(true);
+    const [framework, setFramework]         = useState<FrameworkKey>('NIST_AI_RMF');
+    const [pillars, setPillars]             = useState<PillarAvg[]>([]);
+    const [loading, setLoading]             = useState(true);
+    const [clients, setClients]             = useState<Client[]>([]);
+    const [selectedClientId, setSelectedClientId] = useState<string>('');
 
+    // Load client list once
     useEffect(() => {
-        Promise.all([
-            api.get('/analytics/pillar-averages'),
-            api.get('/analytics/risk-trends'),
-        ]).then(([p, r]) => {
-            setPillars(p.data);
-            setRiskTrends(r.data);
-        }).catch(console.error).finally(() => setLoading(false));
+        api.get('/clients').then(res => setClients(res.data)).catch(console.error);
     }, []);
+
+    // Reload analytics whenever the selected client changes
+    useEffect(() => {
+        setLoading(true);
+        const params = selectedClientId ? `?clientId=${selectedClientId}` : '';
+        api.get(`/analytics/pillar-averages${params}`)
+            .then(p => setPillars(p.data))
+            .catch(console.error)
+            .finally(() => setLoading(false));
+    }, [selectedClientId]);
 
     const fw = FRAMEWORKS[framework];
     const assessmentCount = pillars[0]?.assessmentCount ?? 0;
+    const selectedClient = clients.find(c => c.id === selectedClientId);
 
     // Build benchmark data
     const benchmarkData = pillars.map(p => {
@@ -129,28 +138,6 @@ export default function AnalyticsPage() {
         },
     };
 
-    // Risk trend chart
-    const trendData = {
-        labels: riskTrends.map(d => d.month),
-        datasets: [
-            { label: 'Crítico', data: riskTrends.map(d => d.CRITICAL || 0), borderColor: '#EF4444', backgroundColor: 'rgba(239,68,68,0.15)', tension: 0.4, fill: false },
-            { label: 'Alto',    data: riskTrends.map(d => d.HIGH    || 0), borderColor: '#F97316', backgroundColor: 'rgba(249,115,22,0.15)', tension: 0.4, fill: false },
-            { label: 'Medio',   data: riskTrends.map(d => d.MEDIUM  || 0), borderColor: '#F59E0B', backgroundColor: 'rgba(245,158,11,0.15)', tension: 0.4, fill: false },
-            { label: 'Bajo',    data: riskTrends.map(d => d.LOW     || 0), borderColor: '#22C55E', backgroundColor: 'rgba(34,197,94,0.15)',  tension: 0.4, fill: false },
-        ],
-    };
-
-    const trendOptions = {
-        responsive: true,
-        plugins: {
-            legend: { position: 'top' as const, labels: { color: '#cbd5e1', font: { size: 12 } } },
-        },
-        scales: {
-            y: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(148,163,184,0.1)' } },
-            x: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(148,163,184,0.1)' } },
-        },
-    };
-
     // Summary stats
     const okCount       = benchmarkData.filter(p => p.status === 'ok').length;
     const warnCount     = benchmarkData.filter(p => p.status === 'warn').length;
@@ -165,31 +152,60 @@ export default function AnalyticsPage() {
     return (
         <div className="space-y-6 fade-in">
             {/* Header */}
-            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
-                <div>
-                    <h1 className="text-2xl font-bold text-surface-100">Analítica de Cumplimiento</h1>
-                    <p className="text-sm text-surface-400 mt-1">
-                        Comparativa de madurez vs estándares internacionales de ciberseguridad para IA
-                        {assessmentCount > 0 && <span className="ml-2 text-primary-400">· {assessmentCount} evaluación{assessmentCount !== 1 ? 'es' : ''} incluida{assessmentCount !== 1 ? 's' : ''}</span>}
-                    </p>
+            <div className="flex flex-col gap-4">
+                <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+                    <div>
+                        <h1 className="text-2xl font-bold text-surface-100">Analítica de Cumplimiento</h1>
+                        <p className="text-sm text-surface-400 mt-1">
+                            {selectedClient
+                                ? <>Análisis individual de <span className="text-primary-400 font-medium">{selectedClient.name}</span></>
+                                : 'Comparativa de madurez vs estándares internacionales de ciberseguridad para IA'
+                            }
+                            {assessmentCount > 0 && <span className="ml-2 text-primary-400">· {assessmentCount === 1 ? '1 evaluación incluida' : `${assessmentCount} evaluaciones incluidas`}</span>}
+                        </p>
+                    </div>
+
+                    {/* Framework toggle */}
+                    <div className="flex gap-1 bg-surface-800/50 p-1 rounded-xl border border-primary-800/20 shrink-0">
+                        {(Object.keys(FRAMEWORKS) as FrameworkKey[]).map(key => (
+                            <button
+                                key={key}
+                                onClick={() => setFramework(key)}
+                                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all
+                                    ${framework === key
+                                        ? 'text-white shadow-sm'
+                                        : 'text-surface-400 hover:text-surface-200'
+                                    }`}
+                                style={framework === key ? { backgroundColor: FRAMEWORKS[key].color + 'CC' } : {}}
+                            >
+                                {FRAMEWORKS[key].badge}
+                            </button>
+                        ))}
+                    </div>
                 </div>
 
-                {/* Framework toggle */}
-                <div className="flex gap-1 bg-surface-800/50 p-1 rounded-xl border border-primary-800/20 shrink-0">
-                    {(Object.keys(FRAMEWORKS) as FrameworkKey[]).map(key => (
+                {/* Client selector */}
+                <div className="flex items-center gap-3">
+                    <label htmlFor="client-select" className="text-xs font-medium text-surface-400 shrink-0">Cliente:</label>
+                    <select
+                        id="client-select"
+                        value={selectedClientId}
+                        onChange={e => setSelectedClientId(e.target.value)}
+                        className="input-field max-w-xs text-sm py-2"
+                    >
+                        <option value="">Todos los clientes</option>
+                        {clients.map(c => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                    </select>
+                    {selectedClientId && (
                         <button
-                            key={key}
-                            onClick={() => setFramework(key)}
-                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all
-                                ${framework === key
-                                    ? 'text-white shadow-sm'
-                                    : 'text-surface-400 hover:text-surface-200'
-                                }`}
-                            style={framework === key ? { backgroundColor: FRAMEWORKS[key].color + 'CC' } : {}}
+                            onClick={() => setSelectedClientId('')}
+                            className="text-xs text-surface-400 hover:text-surface-200 transition-colors"
                         >
-                            {FRAMEWORKS[key].badge}
+                            ✕ Limpiar
                         </button>
-                    ))}
+                    )}
                 </div>
             </div>
 
@@ -298,17 +314,6 @@ export default function AnalyticsPage() {
                 </>
             )}
 
-            {/* Risk trends */}
-            <div className="glass-card p-6">
-                <h2 className="text-base font-semibold text-surface-100 mb-4">
-                    Evolución de riesgo <span className="text-sm font-normal text-surface-500">(evaluaciones completadas)</span>
-                </h2>
-                {riskTrends.length > 0 ? (
-                    <Line data={trendData} options={trendOptions} />
-                ) : (
-                    <p className="text-center text-surface-500 text-sm py-8">No hay suficientes datos históricos para mostrar tendencias</p>
-                )}
-            </div>
         </div>
     );
 }

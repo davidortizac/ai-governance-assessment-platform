@@ -1,7 +1,9 @@
 import { Router, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import { authenticate, AuthRequest, AuthPayload } from '../middleware/auth';
 import { generatePDFReport } from '../services/pdf.service';
 import { generateLLMAnalysis } from '../services/llm.service';
+import { sendReportEmail } from '../services/email.service';
 import prisma from '../lib/prisma';
 
 export const reportRouter = Router();
@@ -93,7 +95,7 @@ reportRouter.get('/:assessmentId/pdf', async (req: AuthRequest, res: Response): 
         const mm   = String(date.getMonth() + 1).padStart(2, '0');
         const aaaa = date.getFullYear();
 
-        const filename = `Assement_CSIA_${clientName}_${meta?.type ?? 'EXPRESS'}_${dd}-${mm}-${aaaa}.pdf`;
+        const filename = `Assessment_CSIA_${clientName}_${meta?.type ?? 'EXPRESS'}_${dd}-${mm}-${aaaa}.pdf`;
 
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
@@ -167,6 +169,26 @@ reportRouter.get('/:assessmentId/regenerate-status', async (req: AuthRequest, re
     res.json({ status: 'done', hasAnalysis: !!record?.llmAnalysis });
 });
 
+// DELETE /api/reports/:assessmentId/llm-analysis
+// Clears the stored LLM analysis so it can be regenerated with a different model.
+reportRouter.delete('/:assessmentId/llm-analysis', async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const { assessmentId } = req.params;
+        const allowed = await assertReportAccess(assessmentId, req.user!, res);
+        if (!allowed) return;
+
+        await prisma.assessment.update({
+            where: { id: assessmentId },
+            data: { llmAnalysis: Prisma.DbNull },
+        });
+
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Delete LLM analysis error:', error);
+        res.status(500).json({ error: 'Error al eliminar el análisis' });
+    }
+});
+
 // GET /api/reports/:assessmentId/json
 reportRouter.get('/:assessmentId/json', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
@@ -188,6 +210,63 @@ reportRouter.get('/:assessmentId/json', async (req: AuthRequest, res: Response):
     } catch (error) {
         console.error('JSON export error:', error);
         res.status(500).json({ error: 'Error al exportar JSON' });
+    }
+});
+
+// POST /api/reports/:assessmentId/send-email
+// Generates the PDF and sends it by email to the specified recipients.
+reportRouter.post('/:assessmentId/send-email', async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const { assessmentId } = req.params;
+        const allowed = await assertReportAccess(assessmentId, req.user!, res);
+        if (!allowed) return;
+
+        const { recipients, filename, extraMessage } = req.body as {
+            recipients?: unknown;
+            filename?: string;
+            extraMessage?: string;
+        };
+
+        // Validate recipients
+        const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!Array.isArray(recipients) || recipients.length === 0 ||
+            !recipients.every((r): r is string => typeof r === 'string' && EMAIL_RE.test(r))) {
+            res.status(400).json({ error: 'Se requiere al menos un destinatario válido.' });
+            return;
+        }
+
+        const assessment = await prisma.assessment.findUnique({
+            where: { id: assessmentId },
+            include: { client: true },
+        });
+        if (!assessment) { res.status(404).json({ error: 'Evaluación no encontrada' }); return; }
+
+        const pdfBuffer = await generatePDFReport(assessmentId);
+
+        const safeClientName = assessment.client.name
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+        const date = assessment.completedAt ?? assessment.createdAt;
+        const dd   = String(date.getDate()).padStart(2, '0');
+        const mm   = String(date.getMonth() + 1).padStart(2, '0');
+        const aaaa = date.getFullYear();
+        const defaultFilename = `Assessment_CSIA_${safeClientName}_${assessment.type}_${dd}-${mm}-${aaaa}.pdf`;
+
+        await sendReportEmail({
+            to: recipients,
+            pdfBuffer,
+            filename: (filename?.trim() || defaultFilename),
+            clientName: assessment.client.name,
+            assessmentType: assessment.type,
+            maturityLevel: assessment.maturityLevel,
+            overallScore: assessment.overallScore ? Number(assessment.overallScore) : null,
+            extraMessage: extraMessage?.trim(),
+        });
+
+        res.json({ success: true, sentTo: recipients });
+    } catch (error) {
+        console.error('Send email error:', error);
+        res.status(500).json({ error: 'Error al enviar el correo. Verifica la configuración SMTP.' });
     }
 });
 

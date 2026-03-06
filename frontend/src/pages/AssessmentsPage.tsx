@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import api from '../lib/api';
 
 const RISK_CONFIG: Record<string, { label: string; color: string }> = {
@@ -22,23 +22,31 @@ export default function AssessmentsPage() {
     const [loading, setLoading] = useState(true);
     const [filter, setFilter] = useState({ status: '', type: '' });
     const navigate = useNavigate();
+    const [searchParams] = useSearchParams();
+    const clientId = searchParams.get('clientId');
 
     useEffect(() => {
         const params: any = {};
         if (filter.status) params.status = filter.status;
         if (filter.type) params.type = filter.type;
+        if (clientId) params.clientId = clientId;
         api.get('/assessments', { params })
             .then(res => setAssessments(res.data))
             .catch(console.error)
             .finally(() => setLoading(false));
-    }, [filter]);
+    }, [filter, clientId]);
 
     return (
         <div className="space-y-6 fade-in">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                 <div>
                     <h1 className="text-2xl font-bold text-surface-100">Evaluaciones</h1>
-                    <p className="text-sm text-surface-500 mt-1">Historial de evaluaciones de madurez</p>
+                    <p className="text-sm text-surface-500 mt-1">
+                        {clientId
+                            ? <span>Filtrando por cliente · <button className="text-primary-400 hover:text-primary-300" onClick={() => navigate('/assessments')}>Ver todas</button></span>
+                            : 'Historial de evaluaciones de madurez'
+                        }
+                    </p>
                 </div>
                 <button onClick={() => navigate('/assessments/new')} className="btn-primary">
                     + Nueva Evaluación
