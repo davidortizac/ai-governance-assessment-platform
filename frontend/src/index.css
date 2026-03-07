@@ -130,6 +130,24 @@
   .badge-info {
     @apply badge bg-primary-500/10 text-primary-400 border border-primary-500/20;
   }
+
+  .badge-neutral {
+    @apply badge bg-surface-500/10 text-surface-400 border border-surface-500/20;
+  }
+
+  /* Dropdown menu items */
+  .menu-item {
+    @apply w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed;
+    color: var(--text-base);
+  }
+
+  .menu-item:not(:disabled):hover {
+    @apply bg-primary-500/10;
+  }
+
+  .menu-icon {
+    @apply w-4 h-4 shrink-0 flex items-center justify-center;
+  }
 }
 
 .btn-primary:hover {
@@ -162,6 +180,14 @@
 
 :root:not(.dark) .border-surface-700\/30 {
   border-color: rgba(123, 94, 167, 0.2) !important;
+}
+
+:root:not(.dark) .border-surface-700 {
+  border-color: rgba(123, 94, 167, 0.15) !important;
+}
+
+:root:not(.dark) .bg-surface-900\/50 {
+  background-color: rgba(245, 243, 255, 0.8) !important;
 }
 
 /* ── Utilities ────────────────────────────────────────────────────────────── */

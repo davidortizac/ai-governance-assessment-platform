@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { authenticate, AuthRequest, AuthPayload } from '../middleware/auth';
 import { generatePDFReport } from '../services/pdf.service';
-import { generateLLMAnalysis } from '../services/llm.service';
+import { generateLLMAnalysis, listOllamaModels } from '../services/llm.service';
 import { sendReportEmail } from '../services/email.service';
 import prisma from '../lib/prisma';
 
@@ -313,4 +313,27 @@ reportRouter.get('/:assessmentId/csv', async (req: AuthRequest, res: Response): 
         console.error('CSV export error:', error);
         res.status(500).json({ error: 'Error al exportar CSV' });
     }
+});
+
+// GET /api/reports/llm-models — List available LLM models + current selection
+reportRouter.get('/llm-models', async (_req: AuthRequest, res: Response): Promise<void> => {
+    const currentModel = process.env.OLLAMA_MODEL ?? 'deepseek-r1:8b';
+    try {
+        const models = await listOllamaModels();
+        res.json({ models, currentModel });
+    } catch (err: any) {
+        res.json({ models: [], currentModel, error: err.message ?? 'No se pudo conectar al servidor LLM' });
+    }
+});
+
+// POST /api/reports/llm-model — Set the active LLM model at runtime
+reportRouter.post('/llm-model', (req: AuthRequest, res: Response): void => {
+    const { model } = req.body as { model?: string };
+    if (!model || typeof model !== 'string' || !model.trim()) {
+        res.status(400).json({ error: 'El campo model es requerido' });
+        return;
+    }
+    process.env.OLLAMA_MODEL = model.trim();
+    console.log(`[LLM] Model changed to: ${model.trim()}`);
+    res.json({ success: true, model: model.trim() });
 });

@@ -143,6 +143,103 @@ function renderFooter(doc: any, FR: string, FB: string, pageNum: number, total: 
 }
 
 /* -------------------------------------------------------------------------- */
+/* RADAR CHART RENDERER                                                        */
+/* -------------------------------------------------------------------------- */
+
+function renderRadarChart(
+    doc: any, FR: string, FB: string,
+    pillarScores: Array<{ score: any; pillar: { name: string } }>,
+    cx: number, cy: number, radius: number,
+): void {
+    const N = pillarScores.length;
+    if (N < 3) return;
+
+    const angleFor = (i: number) => ((i / N) * 360 - 90) * Math.PI / 180;
+
+    /* Hexagonal grid rings */
+    for (let ring = 1; ring <= 4; ring++) {
+        const rr = radius * ring / 4;
+        for (let i = 0; i < N; i++) {
+            const a = angleFor(i);
+            const px = cx + rr * Math.cos(a);
+            const py = cy + rr * Math.sin(a);
+            if (i === 0) doc.moveTo(px, py);
+            else doc.lineTo(px, py);
+        }
+        doc.closePath().lineWidth(0.5).strokeColor('#CBD5E1').stroke();
+    }
+
+    /* Axis lines */
+    for (let i = 0; i < N; i++) {
+        const a = angleFor(i);
+        doc.moveTo(cx, cy)
+            .lineTo(cx + radius * Math.cos(a), cy + radius * Math.sin(a))
+            .lineWidth(0.5).strokeColor('#CBD5E1').stroke();
+    }
+
+    /* Scale labels on first axis (1–4) */
+    for (let level = 1; level <= 4; level++) {
+        const rr = radius * level / 4;
+        const a  = angleFor(0);
+        doc.font(FR).fontSize(7).fillColor(C.TEXT_LIGHT)
+            .text(`${level}`, cx + rr * Math.cos(a) + 5, cy + rr * Math.sin(a) - 4, { lineBreak: false });
+    }
+
+    /* Score polygon — compute points */
+    const pts: Array<[number, number]> = pillarScores.map((ps, i) => {
+        const a = angleFor(i);
+        const r = radius * Math.min(Number(ps.score) / 4, 1);
+        return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+    });
+
+    /* Filled area */
+    doc.save();
+    doc.fillOpacity(0.25);
+    doc.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) doc.lineTo(pts[i][0], pts[i][1]);
+    doc.closePath().fill(C.STEEL);
+    doc.restore();
+
+    /* Stroke outline */
+    doc.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) doc.lineTo(pts[i][0], pts[i][1]);
+    doc.closePath().lineWidth(1.5).strokeColor(C.STEEL).stroke();
+
+    /* Data dots + score labels */
+    for (let i = 0; i < pts.length; i++) {
+        const [px, py] = pts[i];
+        doc.circle(px, py, 3.5).fill(C.STEEL);
+
+        const score = Number(pillarScores[i].score);
+        const a = angleFor(i);
+        const lblR = radius * Math.min(score / 4, 1) + 14;
+        const lx = cx + lblR * Math.cos(a);
+        const ly = cy + lblR * Math.sin(a);
+        doc.font(FB).fontSize(8).fillColor(C.NAVY)
+            .text(score.toFixed(2), lx - 14, ly - 5, { width: 28, align: 'center', lineBreak: false });
+    }
+
+    /* Pillar axis labels */
+    const labelCfg = [
+        { dx: -50, dy: -22, w: 100, align: 'center' as const },
+        { dx: 10,  dy: -16, w: 100, align: 'left'   as const },
+        { dx: 10,  dy: 2,   w: 100, align: 'left'   as const },
+        { dx: -50, dy: 10,  w: 100, align: 'center' as const },
+        { dx: -110, dy: 2,   w: 100, align: 'right'  as const },
+        { dx: -110, dy: -16, w: 100, align: 'right'  as const },
+    ];
+
+    for (let i = 0; i < Math.min(N, labelCfg.length); i++) {
+        const a = angleFor(i);
+        const tipX = cx + radius * Math.cos(a);
+        const tipY = cy + radius * Math.sin(a);
+        const { dx, dy, w, align } = labelCfg[i];
+        doc.font(FB).fontSize(8).fillColor(C.TEXT)
+            .text(pillarScores[i].pillar.name, tipX + dx, tipY + dy, { width: w, align, lineBreak: true });
+    }
+}
+
+/* -------------------------------------------------------------------------- */
 /* MAIN REPORT                                                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -196,16 +293,14 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
         const addHeader = (title: string) => renderHeader(doc, FR, FB, logoPath, title);
         const addFooter = (n: number, t: number) => renderFooter(doc, FR, FB, n, t);
 
-        /* ── Helper: score bar ── */
         const drawScoreBar = (x: number, y: number, score: number, barW = 100, barH = 7) => {
             const pct = Math.min(Math.max(Number(score) / 4, 0), 1);
             doc.rect(x, y, barW, barH).fill('#DDE3EE');
             if (pct > 0) doc.rect(x, y, barW * pct, barH).fill(scoreColor(Number(score)));
         };
 
-        /* ── Helper: section label ── */
         const secLabel = (text: string, x: number, y: number) =>
-            doc.font(FB).fontSize(7.5).fillColor(C.TEXT_LIGHT).text(text, x, y, { lineBreak: false });
+            doc.font(FB).fontSize(8).fillColor(C.TEXT_LIGHT).text(text, x, y, { lineBreak: false });
 
         /* ══════════════════════════════════════════════════════════════════════
            PAGE 1 — COVER
@@ -256,25 +351,24 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
         }
         doc.rect(MARGIN + 30, infoLY + 2, CONTENT_W - 60, 0.5).fill('#334E7B');
 
-        /* Score display */
+        /* Score display — sin referencia /4.0 */
         const scoreY = infoLY + 26;
         const scoreVal = assessment.overallScore?.toFixed(2) ?? '—';
         doc.font(FB).fontSize(48).fillColor(C.GOLD)
             .text(scoreVal, 0, scoreY, { width: PAGE_W, align: 'center', lineBreak: false });
-        doc.font(FR).fontSize(12).fillColor(C.SILVER)
-            .text('/ 4.0  ·  SCORE GENERAL', 0, scoreY + 58,
+        doc.font(FB).fontSize(12).fillColor(C.SILVER)
+            .text('SCORE GENERAL', 0, scoreY + 56,
                 { width: PAGE_W, align: 'center', lineBreak: false });
 
+        /* Madurez y Riesgo centrados debajo */
         const mat  = MATURITY_LABEL[matLevel ?? 0] ?? '—';
         const risk = RISK_LABEL[riskLevel ?? ''] ?? '—';
-        doc.font(FR).fontSize(10).fillColor(C.SILVER)
-            .text(`Madurez: `, 0, scoreY + 82, { width: PAGE_W / 2, align: 'right', lineBreak: false });
-        doc.font(FB).fontSize(10).fillColor(C.WHITE)
-            .text(mat, PAGE_W / 2 + 2, scoreY + 82, { lineBreak: false });
-        doc.font(FR).fontSize(10).fillColor(C.SILVER)
-            .text('  ·  Riesgo: ', PAGE_W / 2 + 2 + doc.widthOfString(mat), scoreY + 82, { lineBreak: false });
-        doc.font(FB).fontSize(10).fillColor(RISK_COLOR[riskLevel ?? ''] ?? C.SILVER)
-            .text(risk, PAGE_W / 2 + 2 + doc.widthOfString(mat) + doc.widthOfString('  ·  Riesgo: '), scoreY + 82, { lineBreak: false });
+        doc.font(FR).fontSize(11).fillColor(C.SILVER)
+            .text(`Madurez: ${mat}`, 0, scoreY + 80,
+                { width: PAGE_W, align: 'center', lineBreak: false });
+        doc.font(FR).fontSize(11).fillColor(RISK_COLOR[riskLevel ?? ''] ?? C.SILVER)
+            .text(`Riesgo: ${risk}`, 0, scoreY + 98,
+                { width: PAGE_W, align: 'center', lineBreak: false });
 
         doc.font(FR).fontSize(7).fillColor(C.SILVER)
             .text('CONFIDENCIAL · Para uso interno exclusivo',
@@ -290,23 +384,23 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
 
         let y = CONTENT_Y;
 
-        /* Executive summary */
         secLabel('RESUMEN EJECUTIVO', MARGIN, y);
         y += 14;
         const execText = llmData?.executiveSummary ?? FALLBACK;
-        doc.font(FR).fontSize(10.5).fillColor(C.TEXT)
+        doc.font(FR).fontSize(11).fillColor(C.TEXT)
             .text(execText, MARGIN, y, { width: CONTENT_W, align: 'justify', lineGap: 3 });
         y += doc.heightOfString(execText, { width: CONTENT_W, lineGap: 3 }) + 22;
 
         /* Awareness callout */
         const awText   = llmData?.awarenessMessage ?? FALLBACK;
-        const awInnerW = CONTENT_W - 28;
-        const awH      = doc.heightOfString(awText, { width: awInnerW, lineGap: 3 }) + 38;
+        const awInnerW = CONTENT_W - 30;
+        doc.font(FR).fontSize(11);
+        const awH = doc.heightOfString(awText, { width: awInnerW, lineGap: 3 }) + 40;
         doc.rect(MARGIN, y, CONTENT_W, awH).fill(C.GOLD_BG);
         doc.rect(MARGIN, y, 4, awH).fill(C.GOLD);
-        secLabel('POR QUÉ ES IMPORTANTE ACTUAR AHORA', MARGIN + 16, y + 10);
-        doc.font(FR).fontSize(10.5).fillColor(C.TEXT_MUTED)
-            .text(awText, MARGIN + 16, y + 26, { width: awInnerW, align: 'justify', lineGap: 3 });
+        secLabel('POR QUÉ ES IMPORTANTE ACTUAR AHORA', MARGIN + 16, y + 12);
+        doc.font(FR).fontSize(11).fillColor(C.TEXT_MUTED)
+            .text(awText, MARGIN + 16, y + 28, { width: awInnerW, align: 'justify', lineGap: 3 });
         y += awH + 22;
 
         /* Industry benchmark */
@@ -314,7 +408,7 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
             const benchText = llmData?.industryBenchmark ?? FALLBACK;
             secLabel('CONTEXTO DE INDUSTRIA', MARGIN, y);
             y += 14;
-            doc.font(FR).fontSize(10).fillColor(C.TEXT_MUTED)
+            doc.font(FR).fontSize(11).fillColor(C.TEXT_MUTED)
                 .text(benchText, MARGIN, y, { width: CONTENT_W, align: 'justify', lineGap: 3 });
         }
 
@@ -328,7 +422,7 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
 
         let cy = CONTENT_Y;
 
-        doc.font(FR).fontSize(10.5).fillColor(C.TEXT)
+        doc.font(FR).fontSize(11).fillColor(C.TEXT)
             .text(
                 'CSIA (Cybersecurity Strategy for Artificial Intelligence) es la estrategia ' +
                 'desarrollada por Gamma Ingenieros para apoyar a las organizaciones en la ' +
@@ -336,7 +430,13 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
                 'y ciberseguridad. Integra prácticas de marcos internacionales para construir ' +
                 'un modelo operativo de evaluación, control de riesgos y mejora continua en IA.',
                 MARGIN, cy, { width: CONTENT_W, align: 'justify', lineGap: 3 });
-        cy += 80;
+        cy += doc.heightOfString(
+            'CSIA (Cybersecurity Strategy for Artificial Intelligence) es la estrategia ' +
+            'desarrollada por Gamma Ingenieros para apoyar a las organizaciones en la ' +
+            'adopción segura de inteligencia artificial mediante controles de gobernanza ' +
+            'y ciberseguridad. Integra prácticas de marcos internacionales para construir ' +
+            'un modelo operativo de evaluación, control de riesgos y mejora continua en IA.',
+            { width: CONTENT_W, lineGap: 3 }) + 20;
 
         secLabel('MARCOS DE REFERENCIA INTEGRADOS', MARGIN, cy);
         cy += 16;
@@ -360,13 +460,15 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
         ];
 
         for (const fw of frameworks) {
-            const fwInnerW = CONTENT_W - 22;
-            const fwH = doc.heightOfString(fw.desc, { width: fwInnerW, lineGap: 2 }) + 36;
+            const fwInnerW = CONTENT_W - 28;
+            doc.font(FR).fontSize(11);
+            const fwDescH = doc.heightOfString(fw.desc, { width: fwInnerW, lineGap: 2 });
+            const fwH = fwDescH + 38;
             doc.rect(MARGIN, cy, CONTENT_W, fwH).fill(C.WHITE);
             doc.rect(MARGIN, cy, 3, fwH).fill(fw.color);
-            doc.font(FB).fontSize(10).fillColor(C.TEXT)
+            doc.font(FB).fontSize(11).fillColor(C.TEXT)
                 .text(fw.name, MARGIN + 14, cy + 10, { lineBreak: false });
-            doc.font(FR).fontSize(9.5).fillColor(C.TEXT_MUTED)
+            doc.font(FR).fontSize(11).fillColor(C.TEXT_MUTED)
                 .text(fw.desc, MARGIN + 14, cy + 26, { width: fwInnerW, lineGap: 2 });
             cy += fwH + 10;
         }
@@ -384,34 +486,32 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
         /* Table header row */
         doc.rect(MARGIN, sy, CONTENT_W, 26).fill(C.NAVY);
         doc.font(FB).fontSize(8.5).fillColor(C.WHITE)
-            .text('PILAR',    MARGIN + 14,  sy + 8, { lineBreak: false });
+            .text('PILAR', MARGIN + 14, sy + 8, { lineBreak: false });
         doc.font(FB).fontSize(8.5).fillColor(C.WHITE)
-            .text('PUNTUACIÓN', MARGIN + 270, sy + 8, { lineBreak: false });
+            .text('PUNTUACIÓN', MARGIN + 220, sy + 8, { lineBreak: false });
         doc.font(FB).fontSize(8.5).fillColor(C.WHITE)
-            .text('MADUREZ',  MARGIN + 370, sy + 8, { lineBreak: false });
+            .text('MADUREZ', MARGIN + 390, sy + 8, { lineBreak: false });
         sy += 26;
 
         assessment.pillarScores.forEach((ps, idx) => {
-            const rowH   = 38;
+            const rowH   = 32;
             const score  = Number(ps.score);
             const rowBg  = idx % 2 === 0 ? C.WHITE : C.ROW_ALT;
             doc.rect(MARGIN, sy, CONTENT_W, rowH).fill(rowBg);
             doc.rect(MARGIN, sy, 3, rowH).fill(scoreColor(score));
 
-            /* Pillar name */
-            doc.font(FB).fontSize(9).fillColor(C.TEXT)
-                .text(ps.pillar.name, MARGIN + 12, sy + 7, { lineBreak: false });
-            doc.font(FR).fontSize(7.5).fillColor(C.TEXT_LIGHT)
-                .text(ps.pillar.key, MARGIN + 12, sy + 22, { lineBreak: false });
+            /* Pillar name — solo título, sin key en inglés */
+            doc.font(FB).fontSize(9.5).fillColor(C.TEXT)
+                .text(ps.pillar.name, MARGIN + 12, sy + 10, { lineBreak: false });
 
-            /* Score bar + value */
-            drawScoreBar(MARGIN + 270, sy + 15, score, 80, 7);
+            /* Score bar + value — columnas separadas */
+            drawScoreBar(MARGIN + 220, sy + 13, score, 100, 7);
             doc.font(FB).fontSize(10).fillColor(scoreColor(score))
-                .text(score.toFixed(2), MARGIN + 357, sy + 10, { lineBreak: false });
+                .text(score.toFixed(2), MARGIN + 330, sy + 9, { lineBreak: false });
 
-            /* Maturity label */
+            /* Maturity label — sin solaparse con score */
             doc.font(FR).fontSize(9).fillColor(C.TEXT_MUTED)
-                .text(scoreToMaturity(score), MARGIN + 370, sy + 14, { lineBreak: false });
+                .text(scoreToMaturity(score), MARGIN + 390, sy + 10, { lineBreak: false });
 
             sy += rowH;
         });
@@ -428,8 +528,6 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
             .text('SCORE GENERAL', MARGIN + 14, sy + 8, { lineBreak: false });
         doc.font(FB).fontSize(22).fillColor(C.GOLD)
             .text(overallScore, MARGIN + 14, sy + 18, { lineBreak: false });
-        doc.font(FR).fontSize(8).fillColor(C.SILVER)
-            .text('/ 4.0', MARGIN + 80, sy + 28, { lineBreak: false });
 
         doc.font(FB).fontSize(8).fillColor(C.SILVER)
             .text('NIVEL DE MADUREZ', MARGIN + 200, sy + 8, { lineBreak: false });
@@ -437,12 +535,26 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
             .text(overallMat, MARGIN + 200, sy + 22, { lineBreak: false });
 
         doc.font(FB).fontSize(8).fillColor(C.SILVER)
-            .text('RIESGO GLOBAL', MARGIN + 360, sy + 8, { lineBreak: false });
+            .text('RIESGO GLOBAL', MARGIN + 370, sy + 8, { lineBreak: false });
         doc.font(FB).fontSize(13).fillColor(riskCol)
-            .text(overallRisk, MARGIN + 360, sy + 22, { lineBreak: false });
+            .text(overallRisk, MARGIN + 370, sy + 22, { lineBreak: false });
 
         /* ══════════════════════════════════════════════════════════════════════
-           PAGE 5+ — ANÁLISIS POR PILAR
+           PAGE 5 — RADAR CHART
+        ══════════════════════════════════════════════════════════════════════ */
+
+        doc.addPage();
+        pageBg();
+        addHeader('Perfil de Madurez por Pilar');
+
+        const radarCx = PAGE_W / 2;
+        const radarCy = CONTENT_Y + 260;
+        const radarR  = 155;
+
+        renderRadarChart(doc, FR, FB, assessment.pillarScores as any, radarCx, radarCy, radarR);
+
+        /* ══════════════════════════════════════════════════════════════════════
+           PAGE 6+ — ANÁLISIS POR PILAR
         ══════════════════════════════════════════════════════════════════════ */
 
         doc.addPage();
@@ -454,12 +566,16 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
         for (const ps of assessment.pillarScores) {
             const pillarLLM = llmData?.pillarAnalyses?.[ps.pillar.key];
             const score     = Number(ps.score);
-            const innerW    = CONTENT_W - 24;
+            const innerW    = CONTENT_W - 30;
 
+            /* Set font BEFORE measuring heights so they match rendering */
+            doc.font(FR).fontSize(11);
             const fH = doc.heightOfString(pillarLLM?.findings       ?? FALLBACK, { width: innerW, lineGap: 2 });
             const gH = doc.heightOfString(pillarLLM?.gaps            ?? FALLBACK, { width: innerW, lineGap: 2 });
             const rH = doc.heightOfString(pillarLLM?.recommendation  ?? FALLBACK, { width: innerW, lineGap: 2 });
-            const cardH = 52 + fH + gH + rH + 72; /* header + 3×(label+gap) + sections */
+
+            /* cardH = header(50) + 3×(label 14 + text + gap 14) + bottom padding 16 */
+            const cardH = 50 + (14 + fH + 14) + (14 + gH + 14) + (14 + rH) + 16;
 
             if (py + cardH > FOOTER_Y - 20) {
                 doc.addPage();
@@ -468,42 +584,42 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
                 py = CONTENT_Y;
             }
 
-            /* Card */
+            /* Card background */
             doc.rect(MARGIN, py, CONTENT_W, cardH).fill(C.WHITE);
             doc.rect(MARGIN, py, 4, cardH).fill(scoreColor(score));
 
             /* Card header */
-            doc.font(FB).fontSize(11).fillColor(C.TEXT)
+            doc.font(FB).fontSize(12).fillColor(C.TEXT)
                 .text(ps.pillar.name, MARGIN + 14, py + 10, { lineBreak: false });
-            doc.font(FB).fontSize(10).fillColor(scoreColor(score))
+            doc.font(FB).fontSize(11).fillColor(scoreColor(score))
                 .text(`${score.toFixed(2)} / 4.0`, MARGIN + 14, py + 10,
                     { width: CONTENT_W - 28, align: 'right', lineBreak: false });
 
-            drawScoreBar(MARGIN + 14, py + 30, score, 160, 6);
-            doc.font(FR).fontSize(8.5).fillColor(C.TEXT_LIGHT)
-                .text(scoreToMaturity(score), MARGIN + 182, py + 29, { lineBreak: false });
+            drawScoreBar(MARGIN + 14, py + 32, score, 160, 6);
+            doc.font(FR).fontSize(9).fillColor(C.TEXT_LIGHT)
+                .text(scoreToMaturity(score), MARGIN + 182, py + 30, { lineBreak: false });
 
             let cy2 = py + 50;
 
             /* Findings */
             secLabel('HALLAZGOS', MARGIN + 14, cy2);
-            cy2 += 12;
-            doc.font(FR).fontSize(9.5).fillColor(C.TEXT_MUTED)
+            cy2 += 14;
+            doc.font(FR).fontSize(11).fillColor(C.TEXT_MUTED)
                 .text(pillarLLM?.findings ?? FALLBACK, MARGIN + 14, cy2, { width: innerW, lineGap: 2 });
-            cy2 += fH + 12;
+            cy2 += fH + 14;
 
             /* Gaps */
             secLabel('BRECHAS IDENTIFICADAS', MARGIN + 14, cy2);
-            cy2 += 12;
-            doc.font(FR).fontSize(9.5).fillColor(C.TEXT_MUTED)
+            cy2 += 14;
+            doc.font(FR).fontSize(11).fillColor(C.TEXT_MUTED)
                 .text(pillarLLM?.gaps ?? FALLBACK, MARGIN + 14, cy2, { width: innerW, lineGap: 2 });
-            cy2 += gH + 12;
+            cy2 += gH + 14;
 
             /* Recommendation */
-            doc.font(FB).fontSize(7.5).fillColor(C.STEEL)
+            doc.font(FB).fontSize(8).fillColor(C.STEEL)
                 .text('RECOMENDACIÓN', MARGIN + 14, cy2, { lineBreak: false });
-            cy2 += 12;
-            doc.font(FR).fontSize(9.5).fillColor(C.TEXT)
+            cy2 += 14;
+            doc.font(FR).fontSize(11).fillColor(C.TEXT)
                 .text(pillarLLM?.recommendation ?? FALLBACK, MARGIN + 14, cy2, { width: innerW, lineGap: 2 });
 
             py += cardH + 12;
@@ -522,9 +638,9 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
         const quickWins = llmData?.improvementPlan?.quickWins ?? [];
         const longTerm  = llmData?.improvementPlan?.longTerm  ?? [];
 
-        const drawItems = (items: string[], badgeColor: string, sectionLabel: string) => {
+        const drawItems = (items: string[], badgeColor: string, sectionLbl: string) => {
             if (items.length === 0) return;
-            secLabel(sectionLabel, MARGIN, iy);
+            secLabel(sectionLbl, MARGIN, iy);
             iy += 16;
             items.forEach((text, i) => {
                 if (iy > FOOTER_Y - 60) {
@@ -533,18 +649,19 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
                     addHeader('Plan de Mejora (cont.)');
                     iy = CONTENT_Y;
                 }
-                const itemH  = doc.heightOfString(text, { width: CONTENT_W - 46, lineGap: 2 });
-                const blockH = Math.max(itemH + 16, 32);
+                doc.font(FR).fontSize(11);
+                const itemH  = doc.heightOfString(text, { width: CONTENT_W - 48, lineGap: 2 });
+                const blockH = Math.max(itemH + 16, 34);
 
                 doc.rect(MARGIN, iy, CONTENT_W, blockH).fill(C.WHITE);
                 /* Number badge */
                 doc.rect(MARGIN + 8, iy + (blockH - 22) / 2, 22, 22).fill(badgeColor);
-                doc.font(FB).fontSize(8.5).fillColor(C.WHITE)
+                doc.font(FB).fontSize(9).fillColor(C.WHITE)
                     .text(`${i + 1}`, MARGIN + 8, iy + (blockH - 22) / 2 + 6,
                         { width: 22, align: 'center', lineBreak: false });
                 /* Text */
-                doc.font(FR).fontSize(9.5).fillColor(C.TEXT)
-                    .text(text, MARGIN + 38, iy + 8, { width: CONTENT_W - 46, lineGap: 2 });
+                doc.font(FR).fontSize(11).fillColor(C.TEXT)
+                    .text(text, MARGIN + 38, iy + 8, { width: CONTENT_W - 48, lineGap: 2 });
 
                 iy += blockH + 6;
             });
@@ -555,7 +672,7 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
             drawItems(quickWins, C.CONTROLLED, 'ACCIONES INMEDIATAS (QUICK WINS)');
             drawItems(longTerm,  C.STEEL,      'INICIATIVAS A LARGO PLAZO');
         } else {
-            doc.font(FR).fontSize(10.5).fillColor(C.TEXT_LIGHT)
+            doc.font(FR).fontSize(11).fillColor(C.TEXT_LIGHT)
                 .text(FALLBACK, MARGIN, iy, { width: CONTENT_W });
         }
 
