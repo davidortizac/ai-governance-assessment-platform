@@ -1,4 +1,5 @@
 import { Router, Response } from 'express';
+import { randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { OAuth2Client } from 'google-auth-library';
@@ -62,7 +63,7 @@ authRouter.post('/google', async (req: AuthRequest, res: Response): Promise<void
             }
 
             // Create user with a random password (they'll only use Google login)
-            const randomPassword = await bcrypt.hash(Math.random().toString(36) + Date.now(), 12);
+            const randomPassword = await bcrypt.hash(randomBytes(32).toString('hex'), 12);
 
             user = await prisma.user.create({
                 data: {
@@ -97,7 +98,21 @@ authRouter.post('/google', async (req: AuthRequest, res: Response): Promise<void
 // POST /api/auth/register
 authRouter.post('/register', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-        const { email, password, name, role, tenantId } = req.body;
+        const { email, password, name } = req.body;
+
+        // Input validation
+        if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            res.status(400).json({ error: 'Email inválido' });
+            return;
+        }
+        if (!password || typeof password !== 'string' || password.length < 8) {
+            res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
+            return;
+        }
+        if (!name || typeof name !== 'string' || name.trim().length === 0 || name.length > 255) {
+            res.status(400).json({ error: 'Nombre inválido' });
+            return;
+        }
 
         const existing = await prisma.user.findUnique({ where: { email } });
         if (existing) {
@@ -108,7 +123,8 @@ authRouter.post('/register', async (req: AuthRequest, res: Response): Promise<vo
         const hashedPassword = await bcrypt.hash(password, 12);
 
         // If no tenant exists yet, create a default one
-        let finalTenantId = tenantId;
+        // NOTE: role is always CLIENT — never accept role from user input
+        let finalTenantId: string | undefined;
         if (!finalTenantId) {
             let defaultTenant = await prisma.tenant.findFirst({ where: { domain: 'default' } });
             if (!defaultTenant) {
@@ -124,7 +140,7 @@ authRouter.post('/register', async (req: AuthRequest, res: Response): Promise<vo
                 email,
                 password: hashedPassword,
                 name,
-                role: role || 'CLIENT',
+                role: 'CLIENT',
                 tenantId: finalTenantId,
             },
         });

@@ -547,9 +547,31 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
         pageBg();
         addHeader('Perfil de Madurez por Pilar');
 
+        /* Radar title */
+        let ry = CONTENT_Y;
+        doc.font(FB).fontSize(13).fillColor(C.NAVY)
+            .text('Radar de Madurez por Pilar', MARGIN, ry, { width: CONTENT_W, align: 'center' });
+        ry += 22;
+
+        /* Contextual description based on scores */
+        const scores = assessment.pillarScores.map((ps: any) => Number(ps.score));
+        const strongest = assessment.pillarScores.reduce((a: any, b: any) => Number(a.score) > Number(b.score) ? a : b, assessment.pillarScores[0]);
+        const weakest   = assessment.pillarScores.reduce((a: any, b: any) => Number(a.score) < Number(b.score) ? a : b, assessment.pillarScores[0]);
+        const avgScore  = scores.reduce((s: number, v: number) => s + v, 0) / scores.length;
+        const radarDesc = `El siguiente gráfico radar representa el perfil de madurez de ${assessment.client.name} `
+            + `en cada uno de los pilares evaluados dentro del marco CSIA. `
+            + `Con un puntaje promedio de ${avgScore.toFixed(2)} sobre 4.0, `
+            + `la organización muestra su mayor fortaleza en "${strongest.pillar.name}" (${Number(strongest.score).toFixed(2)}) `
+            + `y su principal oportunidad de mejora en "${weakest.pillar.name}" (${Number(weakest.score).toFixed(2)}). `
+            + `Las áreas con menor cobertura en el radar indican los pilares que requieren atención prioritaria `
+            + `para elevar el nivel de madurez general de la organización.`;
+        doc.font(FR).fontSize(10).fillColor(C.TEXT_MUTED)
+            .text(radarDesc, MARGIN, ry, { width: CONTENT_W, align: 'justify', lineGap: 2 });
+        ry += doc.heightOfString(radarDesc, { width: CONTENT_W, lineGap: 2 }) + 16;
+
         const radarCx = PAGE_W / 2;
-        const radarCy = CONTENT_Y + 260;
-        const radarR  = 155;
+        const radarCy = ry + 180;
+        const radarR  = 150;
 
         renderRadarChart(doc, FR, FB, assessment.pillarScores as any, radarCx, radarCy, radarR);
 

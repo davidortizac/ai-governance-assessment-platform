@@ -143,7 +143,7 @@ export default function LoginPage() {
                     <img src="/gammia-mascot.jpg" alt="GAMMIA" className="w-12 h-12 rounded-full object-cover ring-2 ring-primary-500/30" />
                     <div>
                         <p className="text-xs text-surface-400">Donde el futuro y la seguridad se encuentran.</p>
-                        <p className="text-[10px] text-surface-600">Demo: admin@aigovernance.com / admin123</p>
+                        <p className="text-[10px] text-surface-600">Ingresa con tus credenciales corporativas</p>
                     </div>
                 </div>
             </div>
