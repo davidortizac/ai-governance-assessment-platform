@@ -240,6 +240,177 @@ function renderRadarChart(
 }
 
 /* -------------------------------------------------------------------------- */
+/* COVER PAGE RENDERER                                                         */
+/* -------------------------------------------------------------------------- */
+
+interface CoverData {
+    clientName: string;
+    consultantName: string;
+    completedAt: Date | null;
+    type: string;
+    overallScore: number | null;
+    matLevel: number | null;
+    riskLevel: string | null;
+}
+
+function renderCoverPage(
+    doc: any, FR: string, FB: string, logoPath: string, data: CoverData,
+): void {
+    doc.rect(0, 0, PAGE_W, PAGE_H).fill(C.NAVY);
+    doc.rect(0, 0, PAGE_W, 5).fill(C.GOLD);
+    doc.rect(0, 0, 5, PAGE_H).fill(C.GOLD);
+
+    if (logoPath) {
+        try { doc.image(logoPath, PAGE_W / 2 - 50, 55, { width: 100 }); } catch { /* skip */ }
+    }
+
+    const companyY = logoPath ? 178 : 100;
+    doc.font(FB).fontSize(11).fillColor(C.GOLD)
+        .text('GAMMA INGENIEROS', 0, companyY, { width: PAGE_W, align: 'center', lineBreak: false });
+
+    const sepY = companyY + 22;
+    doc.rect(PAGE_W / 2 - 100, sepY + 6, 200, 1).fill(C.GOLD);
+
+    const titleY = sepY + 20;
+    doc.font(FB).fontSize(26).fillColor(C.WHITE)
+        .text('AI CYBERSECURITY', 0, titleY, { width: PAGE_W, align: 'center', lineBreak: false });
+    doc.font(FB).fontSize(26).fillColor(C.WHITE)
+        .text('MATURITY ASSESSMENT', 0, titleY + 36, { width: PAGE_W, align: 'center', lineBreak: false });
+    doc.font(FR).fontSize(11).fillColor(C.SILVER)
+        .text('Evaluación de Madurez y Riesgo en Inteligencia Artificial',
+            0, titleY + 76, { width: PAGE_W, align: 'center', lineBreak: false });
+
+    /* Client info block */
+    const infoY = titleY + 112;
+    doc.rect(MARGIN + 30, infoY, CONTENT_W - 60, 0.5).fill('#334E7B');
+    const infoRows = [
+        { label: 'ORGANIZACIÓN EVALUADA', value: data.clientName },
+        { label: 'CONSULTOR',             value: data.consultantName },
+        { label: 'FECHA',
+          value: data.completedAt?.toLocaleDateString('es-ES', {
+              day: '2-digit', month: 'long', year: 'numeric' }) ?? 'N/A' },
+        { label: 'TIPO DE EVALUACIÓN',    value: data.type },
+    ];
+    let infoLY = infoY + 14;
+    for (const row of infoRows) {
+        doc.font(FR).fontSize(8).fillColor(C.SILVER)
+            .text(row.label, MARGIN + 42, infoLY, { lineBreak: false });
+        doc.font(FB).fontSize(10).fillColor(C.WHITE)
+            .text(row.value, MARGIN + 42, infoLY + 12, { lineBreak: false });
+        infoLY += 36;
+    }
+    doc.rect(MARGIN + 30, infoLY + 2, CONTENT_W - 60, 0.5).fill('#334E7B');
+
+    /* Score display */
+    const scoreY = infoLY + 26;
+    const scoreVal = data.overallScore?.toFixed(2) ?? '—';
+    doc.font(FB).fontSize(48).fillColor(C.GOLD)
+        .text(scoreVal, 0, scoreY, { width: PAGE_W, align: 'center', lineBreak: false });
+    doc.font(FB).fontSize(12).fillColor(C.SILVER)
+        .text('SCORE GENERAL', 0, scoreY + 56,
+            { width: PAGE_W, align: 'center', lineBreak: false });
+
+    /* Madurez y Riesgo */
+    const mat  = MATURITY_LABEL[data.matLevel ?? 0] ?? '—';
+    const risk = RISK_LABEL[data.riskLevel ?? ''] ?? '—';
+    doc.font(FR).fontSize(11).fillColor(C.SILVER)
+        .text(`Madurez: ${mat}`, 0, scoreY + 80,
+            { width: PAGE_W, align: 'center', lineBreak: false });
+    doc.font(FR).fontSize(11).fillColor(RISK_COLOR[data.riskLevel ?? ''] ?? C.SILVER)
+        .text(`Riesgo: ${risk}`, 0, scoreY + 98,
+            { width: PAGE_W, align: 'center', lineBreak: false });
+
+    doc.font(FR).fontSize(7).fillColor(C.SILVER)
+        .text('CONFIDENCIAL · Para uso interno exclusivo',
+            0, PAGE_H - 28, { width: PAGE_W, align: 'center', lineBreak: false });
+}
+
+/* -------------------------------------------------------------------------- */
+/* SIGNATURE PAGE RENDERER                                                     */
+/* -------------------------------------------------------------------------- */
+
+function renderSignaturePage(
+    doc: any, FR: string, FB: string, logoPath: string,
+    llmData: LLMAnalysis | null, startY: number,
+): void {
+    /* Separator line */
+    doc.rect(MARGIN + 60, startY, CONTENT_W - 120, 1).fill(C.GOLD);
+
+    /* Logo */
+    if (logoPath) {
+        try { doc.image(logoPath, PAGE_W / 2 - 40, startY + 20, { width: 80 }); } catch { /* skip */ }
+    }
+
+    const stampY = logoPath ? startY + 116 : startY + 30;
+
+    doc.font(FB).fontSize(14).fillColor(C.NAVY)
+        .text('GAMMA INGENIEROS', 0, stampY, { width: PAGE_W, align: 'center', lineBreak: false });
+    doc.font(FR).fontSize(9).fillColor(C.TEXT_LIGHT)
+        .text('AI Governance & Cybersecurity', 0, stampY + 20, { width: PAGE_W, align: 'center', lineBreak: false });
+
+    doc.rect(MARGIN + 100, stampY + 40, CONTENT_W - 200, 0.5).fill(C.GOLD);
+
+    doc.font(FR).fontSize(10).fillColor(C.TEXT_MUTED)
+        .text('Este informe fue generado mediante la plataforma de evaluación de Gamma Ingenieros',
+            MARGIN, stampY + 56, { width: CONTENT_W, align: 'center', lineGap: 2 });
+    doc.font(FR).fontSize(10).fillColor(C.TEXT_MUTED)
+        .text('con análisis asistido por inteligencia artificial.',
+            MARGIN, stampY + 72, { width: CONTENT_W, align: 'center', lineGap: 2 });
+
+    /* GammIA badge */
+    const badgeY = stampY + 104;
+    const badgeW = 180;
+    const badgeH = 32;
+    const badgeX = PAGE_W / 2 - badgeW / 2;
+    doc.rect(badgeX, badgeY, badgeW, badgeH).fill(C.NAVY);
+    doc.font(FB).fontSize(11).fillColor(C.GOLD)
+        .text('Powered by GammIA', badgeX, badgeY + 9, { width: badgeW, align: 'center', lineBreak: false });
+
+    /* Model & date info */
+    const modelName = llmData?.model ?? process.env.OLLAMA_MODEL ?? '—';
+    const genDate = llmData?.generatedAt
+        ? new Date(llmData.generatedAt).toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric' })
+        : new Date().toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric' });
+    doc.font(FR).fontSize(8).fillColor(C.TEXT_LIGHT)
+        .text(`Modelo de análisis: ${modelName}`, MARGIN, badgeY + 48, { width: CONTENT_W, align: 'center', lineBreak: false });
+    doc.font(FR).fontSize(8).fillColor(C.TEXT_LIGHT)
+        .text(`Fecha de generación: ${genDate}`, MARGIN, badgeY + 62, { width: CONTENT_W, align: 'center', lineBreak: false });
+
+    /* Disclaimer — metodología */
+    doc.rect(MARGIN + 60, badgeY + 88, CONTENT_W - 120, 0.5).fill(C.GOLD);
+    doc.font(FR).fontSize(7.5).fillColor(C.TEXT_LIGHT)
+        .text(
+            'Nota: Los hallazgos, brechas y recomendaciones presentados en este informe han sido generados ' +
+            'mediante análisis automatizado de inteligencia artificial y revisados bajo la metodología CSIA de ' +
+            'Gamma Ingenieros. Este documento es confidencial y está destinado exclusivamente al uso interno ' +
+            'de la organización evaluada.',
+            MARGIN + 30, badgeY + 100, { width: CONTENT_W - 60, align: 'center', lineGap: 2 });
+
+    /* Disclaimer — protección de datos */
+    const dpY = badgeY + 164;
+    doc.rect(MARGIN + 40, dpY, CONTENT_W - 80, 0.5).fill(C.TEXT_LIGHT);
+    doc.font(FB).fontSize(7.5).fillColor(C.TEXT)
+        .text('AVISO DE PROTECCIÓN DE DATOS', MARGIN, dpY + 10,
+            { width: CONTENT_W, align: 'center', lineBreak: false });
+    doc.font(FR).fontSize(7).fillColor(C.TEXT_MUTED)
+        .text(
+            'La información contenida en el presente informe es tratada con estricta confidencialidad ' +
+            'y se encuentra protegida conforme a las políticas de seguridad de la información de ' +
+            'Gamma Ingenieros S.A.S., en cumplimiento de la Ley 1581 de 2012 (Régimen General de ' +
+            'Protección de Datos Personales), el Decreto 1377 de 2013 y demás normas concordantes ' +
+            'expedidas por el Gobierno de la República de Colombia. Los datos suministrados por la ' +
+            'organización evaluada son recopilados, almacenados y procesados exclusivamente para los ' +
+            'fines de la evaluación de madurez en ciberseguridad e inteligencia artificial, y no serán ' +
+            'divulgados, transferidos ni comercializados a terceros sin la autorización previa, expresa ' +
+            'y escrita del titular. Gamma Ingenieros implementa medidas técnicas, administrativas y ' +
+            'organizativas adecuadas para garantizar la integridad, disponibilidad y confidencialidad ' +
+            'de la información, en concordancia con los estándares internacionales de seguridad aplicables. ' +
+            'El receptor de este documento se compromete a preservar su carácter reservado y a no ' +
+            'reproducirlo, total o parcialmente, sin autorización expresa de Gamma Ingenieros.',
+            MARGIN + 30, dpY + 24, { width: CONTENT_W - 60, align: 'justify', lineGap: 1.5 });
+}
+
+/* -------------------------------------------------------------------------- */
 /* MAIN REPORT                                                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -306,73 +477,15 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
            PAGE 1 — COVER
         ══════════════════════════════════════════════════════════════════════ */
 
-        doc.rect(0, 0, PAGE_W, PAGE_H).fill(C.NAVY);
-        doc.rect(0, 0, PAGE_W, 5).fill(C.GOLD);
-        doc.rect(0, 0, 5, PAGE_H).fill(C.GOLD);
-
-        if (logoPath) {
-            try { doc.image(logoPath, PAGE_W / 2 - 50, 55, { width: 100 }); } catch { /* skip */ }
-        }
-
-        const companyY = logoPath ? 178 : 100;
-        doc.font(FB).fontSize(11).fillColor(C.GOLD)
-            .text('GAMMA INGENIEROS', 0, companyY, { width: PAGE_W, align: 'center', lineBreak: false });
-
-        const sepY = companyY + 22;
-        doc.rect(PAGE_W / 2 - 100, sepY + 6, 200, 1).fill(C.GOLD);
-
-        const titleY = sepY + 20;
-        doc.font(FB).fontSize(26).fillColor(C.WHITE)
-            .text('AI CYBERSECURITY', 0, titleY, { width: PAGE_W, align: 'center', lineBreak: false });
-        doc.font(FB).fontSize(26).fillColor(C.WHITE)
-            .text('MATURITY ASSESSMENT', 0, titleY + 36, { width: PAGE_W, align: 'center', lineBreak: false });
-        doc.font(FR).fontSize(11).fillColor(C.SILVER)
-            .text('Evaluación de Madurez y Riesgo en Inteligencia Artificial',
-                0, titleY + 76, { width: PAGE_W, align: 'center', lineBreak: false });
-
-        /* Client info block */
-        const infoY = titleY + 112;
-        doc.rect(MARGIN + 30, infoY, CONTENT_W - 60, 0.5).fill('#334E7B');
-        const infoRows = [
-            { label: 'ORGANIZACIÓN EVALUADA', value: assessment.client.name },
-            { label: 'CONSULTOR',             value: assessment.createdBy.name },
-            { label: 'FECHA',
-              value: assessment.completedAt?.toLocaleDateString('es-ES', {
-                  day: '2-digit', month: 'long', year: 'numeric' }) ?? 'N/A' },
-            { label: 'TIPO DE EVALUACIÓN',    value: assessment.type },
-        ];
-        let infoLY = infoY + 14;
-        for (const row of infoRows) {
-            doc.font(FR).fontSize(8).fillColor(C.SILVER)
-                .text(row.label, MARGIN + 42, infoLY, { lineBreak: false });
-            doc.font(FB).fontSize(10).fillColor(C.WHITE)
-                .text(row.value, MARGIN + 42, infoLY + 12, { lineBreak: false });
-            infoLY += 36;
-        }
-        doc.rect(MARGIN + 30, infoLY + 2, CONTENT_W - 60, 0.5).fill('#334E7B');
-
-        /* Score display — sin referencia /4.0 */
-        const scoreY = infoLY + 26;
-        const scoreVal = assessment.overallScore?.toFixed(2) ?? '—';
-        doc.font(FB).fontSize(48).fillColor(C.GOLD)
-            .text(scoreVal, 0, scoreY, { width: PAGE_W, align: 'center', lineBreak: false });
-        doc.font(FB).fontSize(12).fillColor(C.SILVER)
-            .text('SCORE GENERAL', 0, scoreY + 56,
-                { width: PAGE_W, align: 'center', lineBreak: false });
-
-        /* Madurez y Riesgo centrados debajo */
-        const mat  = MATURITY_LABEL[matLevel ?? 0] ?? '—';
-        const risk = RISK_LABEL[riskLevel ?? ''] ?? '—';
-        doc.font(FR).fontSize(11).fillColor(C.SILVER)
-            .text(`Madurez: ${mat}`, 0, scoreY + 80,
-                { width: PAGE_W, align: 'center', lineBreak: false });
-        doc.font(FR).fontSize(11).fillColor(RISK_COLOR[riskLevel ?? ''] ?? C.SILVER)
-            .text(`Riesgo: ${risk}`, 0, scoreY + 98,
-                { width: PAGE_W, align: 'center', lineBreak: false });
-
-        doc.font(FR).fontSize(7).fillColor(C.SILVER)
-            .text('CONFIDENCIAL · Para uso interno exclusivo',
-                0, PAGE_H - 28, { width: PAGE_W, align: 'center', lineBreak: false });
+        renderCoverPage(doc, FR, FB, logoPath, {
+            clientName: assessment.client.name,
+            consultantName: assessment.createdBy.name,
+            completedAt: assessment.completedAt,
+            type: assessment.type,
+            overallScore: assessment.overallScore ? Number(assessment.overallScore) : null,
+            matLevel,
+            riskLevel,
+        });
 
         /* ══════════════════════════════════════════════════════════════════════
            PAGE 2 — RESUMEN EJECUTIVO
@@ -697,6 +810,15 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
             doc.font(FR).fontSize(11).fillColor(C.TEXT_LIGHT)
                 .text(FALLBACK, MARGIN, iy, { width: CONTENT_W });
         }
+
+        /* ══════════════════════════════════════════════════════════════════════
+           LAST PAGE — FIRMA GammIA
+        ══════════════════════════════════════════════════════════════════════ */
+
+        doc.addPage();
+        pageBg();
+        addHeader('Certificación del Informe');
+        renderSignaturePage(doc, FR, FB, logoPath, llmData, CONTENT_Y + 40);
 
         /* ══════════════════════════════════════════════════════════════════════
            FOOTERS (all interior pages)

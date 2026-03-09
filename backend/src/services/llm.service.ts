@@ -311,7 +311,7 @@ export async function generateLLMAnalysis(assessment: any, timeoutMs?: number): 
         top_p: 0.9,
         repeat_penalty: 1.1,
         stream: false,
-        max_tokens: 8192,   // deepseek-r1 uses tokens for <think> blocks before JSON output
+        max_tokens: 16384,  // deepseek-r1 uses tokens for <think> blocks before JSON output — 8k was too short
     });
 
     console.log(`[LLM] POST ${ollamaUrl} (model=${ollamaModel}, timeout=${ollamaTimeout}ms)`);
@@ -329,6 +329,12 @@ export async function generateLLMAnalysis(assessment: any, timeoutMs?: number): 
     }
 
     const raw: string = data?.choices?.[0]?.message?.content ?? '';
+    const finishReason: string = data?.choices?.[0]?.finish_reason ?? '';
+
+    // Warn if the response was truncated by token limit
+    if (finishReason === 'length') {
+        console.warn('[LLM] WARNING: Response was truncated (finish_reason=length). Consider increasing max_tokens or using a model with less verbose reasoning.');
+    }
 
     // Strip <think>...</think> blocks (deepseek-r1)
     const cleaned = stripThinkTags(raw);
