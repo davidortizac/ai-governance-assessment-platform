@@ -118,7 +118,7 @@ clientRouter.post('/', async (req: AuthRequest, res: Response): Promise<void> =>
 });
 
 // PUT /api/clients/:id
-clientRouter.put('/:id', requireRole('ADMIN', 'CONSULTANT') as any, async (req: AuthRequest, res: Response): Promise<void> => {
+clientRouter.put('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
         const baseClient = await assertClientAccess(req.params.id, req.user!, res);
         if (!baseClient) return;
