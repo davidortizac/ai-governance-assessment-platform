@@ -5,7 +5,7 @@ import { useTheme } from '../context/ThemeContext';
 
 const NAV_ALL = [
     { path: '/',            label: 'Dashboard',    icon: '📊', roles: ['ADMIN','CONSULTANT','CLIENT'] },
-    { path: '/clients',     label: 'Clientes',     icon: '🏢', roles: ['ADMIN','CONSULTANT'] },
+    { path: '/clients',     label: 'Clientes',     icon: '🏢', roles: ['ADMIN','CONSULTANT','CLIENT'] },
     { path: '/assessments', label: 'Evaluaciones', icon: '📋', roles: ['ADMIN','CONSULTANT','CLIENT'] },
     { path: '/compare',     label: 'Comparar',     icon: '🔄', roles: ['ADMIN','CONSULTANT'] },
     { path: '/analytics',   label: 'Analítica',    icon: '📈', roles: ['ADMIN','CONSULTANT'] },
