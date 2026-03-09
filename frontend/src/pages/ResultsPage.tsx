@@ -113,6 +113,7 @@ function ModelSubmenu({ open, onSelect }: Readonly<{ open: boolean; onSelect: (m
 /* ------------------------------------------------------------------ */
 /*  SVG icon helpers (keeps menu items readable)                       */
 /* ------------------------------------------------------------------ */
+const IconEye = () => <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>;
 const IconRefresh = () => <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" /></svg>;
 const IconDownload = () => <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>;
 const IconMail = () => <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" /></svg>;
@@ -125,12 +126,12 @@ const IconChevron = ({ rotated }: Readonly<{ rotated: boolean }>) => <svg classN
 /* ------------------------------------------------------------------ */
 /*  Menu panel content (extracted to keep ActionsMenu under threshold) */
 /* ------------------------------------------------------------------ */
-function MenuPanel({ hasAnalysis, regenerating, downloading, deletingAnalysis, exportingCSV, exportingJSON,
-    onRegenerate, onDownloadPdf, onEmail, onDownloadCSV, onDownloadJSON, onDeleteAnalysis, onSelectModel, onClose,
+function MenuPanel({ hasAnalysis, regenerating, downloading, deletingAnalysis, exportingCSV, exportingJSON, loadingPreview,
+    onRegenerate, onDownloadPdf, onPreviewPdf, onEmail, onDownloadCSV, onDownloadJSON, onDeleteAnalysis, onSelectModel, onClose,
 }: Readonly<{
     hasAnalysis: boolean; regenerating: boolean; downloading: boolean; deletingAnalysis: boolean;
-    exportingCSV: boolean; exportingJSON: boolean;
-    onRegenerate: () => void; onDownloadPdf: () => void; onEmail: () => void;
+    exportingCSV: boolean; exportingJSON: boolean; loadingPreview: boolean;
+    onRegenerate: () => void; onDownloadPdf: () => void; onPreviewPdf: () => void; onEmail: () => void;
     onDownloadCSV: () => void; onDownloadJSON: () => void; onDeleteAnalysis: () => void;
     onSelectModel: (m: string) => void; onClose: () => void;
 }>) {
@@ -147,6 +148,10 @@ function MenuPanel({ hasAnalysis, regenerating, downloading, deletingAnalysis, e
             <button onClick={() => { onClose(); onRegenerate(); }} disabled={regenerating} className="menu-item">
                 <span className="menu-icon">{regenerating ? <Spinner /> : <IconRefresh />}</span>
                 <span>{regenerating ? 'Generando...' : regenerateLabel}</span>
+            </button>
+            <button onClick={() => { onClose(); onPreviewPdf(); }} disabled={loadingPreview || !hasAnalysis} className="menu-item">
+                <span className="menu-icon">{loadingPreview ? <Spinner /> : <IconEye />}</span>
+                <span>{loadingPreview ? 'Cargando...' : 'Ver Informe'}</span>
             </button>
             <button onClick={() => { onClose(); onDownloadPdf(); }} disabled={downloading} className="menu-item">
                 <span className="menu-icon">{downloading ? <Spinner /> : <IconDownload />}</span>
@@ -208,8 +213,8 @@ function MenuPanel({ hasAnalysis, regenerating, downloading, deletingAnalysis, e
 /* ------------------------------------------------------------------ */
 function ActionsMenu(props: Readonly<{
     hasAnalysis: boolean; regenerating: boolean; downloading: boolean; deletingAnalysis: boolean;
-    exportingCSV: boolean; exportingJSON: boolean;
-    onRegenerate: () => void; onDownloadPdf: () => void; onEmail: () => void;
+    exportingCSV: boolean; exportingJSON: boolean; loadingPreview: boolean;
+    onRegenerate: () => void; onDownloadPdf: () => void; onPreviewPdf: () => void; onEmail: () => void;
     onDownloadCSV: () => void; onDownloadJSON: () => void; onDeleteAnalysis: () => void;
     onSelectModel: (m: string) => void;
 }>) {
@@ -277,6 +282,8 @@ export default function ResultsPage() {
     const [deletingAnalysis, setDeletingAnalysis] = useState(false);
     const [pdfModalOpen, setPdfModalOpen] = useState(false);
     const [emailModalOpen, setEmailModalOpen] = useState(false);
+    const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
+    const [loadingPreview, setLoadingPreview] = useState(false);
 
     const buildSuggestedPdfName = () => {
         if (!assessment) return `Assessment_CSIA_${id}.pdf`;
@@ -288,6 +295,34 @@ export default function ResultsPage() {
         const mm   = String(date.getMonth() + 1).padStart(2, '0');
         const aaaa = date.getFullYear();
         return `Assessment_CSIA_${clientName}_${assessment.type}_${dd}-${mm}-${aaaa}.pdf`;
+    };
+
+    const handlePreviewPdf = async () => {
+        if (!id) return;
+        setLoadingPreview(true);
+        try {
+            const res = await api.get(`/reports/${id}/pdf`, { responseType: 'blob' });
+            if (res.headers['content-type']?.includes('application/json')) {
+                const text = await (res.data as Blob).text();
+                const json = JSON.parse(text);
+                throw new Error(json.error || 'Server error');
+            }
+            const blob = new Blob([res.data], { type: 'application/pdf' });
+            const url = globalThis.URL.createObjectURL(blob);
+            setPdfPreviewUrl(url);
+        } catch (err: any) {
+            console.error('Error loading preview:', err);
+            alert(err.message || 'Error al cargar la vista previa del PDF.');
+        } finally {
+            setLoadingPreview(false);
+        }
+    };
+
+    const closePreview = () => {
+        if (pdfPreviewUrl) {
+            globalThis.URL.revokeObjectURL(pdfPreviewUrl);
+            setPdfPreviewUrl(null);
+        }
     };
 
     const handleRegenerateAnalysis = async () => {
@@ -303,6 +338,7 @@ export default function ResultsPage() {
                         const updated = await api.get(`/assessments/${id}`);
                         setAssessment(updated.data);
                         setRegenerating(false);
+                        handlePreviewPdf();
                     }
                 } catch (err) {
                     console.error('[LLM] Poll error:', err);
@@ -413,7 +449,21 @@ export default function ResultsPage() {
             {/* Header */}
             <div className="flex items-start sm:items-center justify-between gap-4">
                 <div>
-                    <h1 className="text-2xl font-bold text-surface-100">Resultados de Evaluación</h1>
+                    <div className="flex items-center gap-3">
+                        <h1 className="text-2xl font-bold text-surface-100">Resultados de Evaluación</h1>
+                        {assessment.llmAnalysis && (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" /></svg>
+                                Informe generado
+                            </span>
+                        )}
+                        {loadingPreview && (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full bg-primary-500/10 text-primary-400 border border-primary-500/20">
+                                <Spinner className="w-3 h-3" />
+                                Cargando vista previa…
+                            </span>
+                        )}
+                    </div>
                     <p className="text-sm text-surface-500 mt-1">
                         {assessment.client?.name} · {assessment.type} · {completedDate}
                     </p>
@@ -425,8 +475,10 @@ export default function ResultsPage() {
                     deletingAnalysis={deletingAnalysis}
                     exportingCSV={exportingCSV}
                     exportingJSON={exportingJSON}
+                    loadingPreview={loadingPreview}
                     onRegenerate={handleRegenerateAnalysis}
                     onDownloadPdf={() => setPdfModalOpen(true)}
+                    onPreviewPdf={handlePreviewPdf}
                     onEmail={() => setEmailModalOpen(true)}
                     onDownloadCSV={handleDownloadCSV}
                     onDownloadJSON={handleDownloadJSON}
@@ -545,6 +597,46 @@ export default function ResultsPage() {
                 assessment={assessment}
                 onClose={() => setEmailModalOpen(false)}
             />
+
+            {/* PDF Preview Modal */}
+            {pdfPreviewUrl && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+                    <div className="w-full h-full max-w-5xl max-h-[90vh] m-4 flex flex-col glass-card overflow-hidden" style={{ background: 'var(--bg-card)' }}>
+                        <div className="flex items-center justify-between px-5 py-3 border-b" style={{ borderColor: 'var(--bg-card-border)' }}>
+                            <div className="flex items-center gap-2">
+                                <span className="badge-success">Informe generado</span>
+                                <span className="text-sm font-medium" style={{ color: 'var(--text-base)' }}>Vista previa del informe PDF</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => { closePreview(); setPdfModalOpen(true); }}
+                                    className="btn-primary px-3 py-1.5 text-sm flex items-center gap-1.5"
+                                >
+                                    <IconDownload /> Descargar
+                                </button>
+                                <button
+                                    onClick={closePreview}
+                                    className="p-2 rounded-lg transition-colors hover:bg-surface-700/50"
+                                    style={{ color: 'var(--text-muted)' }}
+                                    title="Cerrar"
+                                >
+                                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div className="flex-1 bg-surface-900">
+                            <iframe
+                                src={pdfPreviewUrl}
+                                className="w-full h-full border-0"
+                                title="Vista previa PDF"
+                                sandbox="allow-same-origin"
+                            />
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

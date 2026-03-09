@@ -333,7 +333,13 @@ reportRouter.post('/llm-model', (req: AuthRequest, res: Response): void => {
         res.status(400).json({ error: 'El campo model es requerido' });
         return;
     }
-    process.env.OLLAMA_MODEL = model.trim();
-    console.log(`[LLM] Model changed to: ${model.trim()}`);
-    res.json({ success: true, model: model.trim() });
+    // Validate model name — only allow alphanumeric, dashes, colons, dots, underscores
+    const sanitized = model.trim();
+    if (!/^[\w.:-]+$/.test(sanitized) || sanitized.length > 128) {
+        res.status(400).json({ error: 'Nombre de modelo inválido' });
+        return;
+    }
+    process.env.OLLAMA_MODEL = sanitized;
+    console.log(`[LLM] Model changed to: ${sanitized}`);
+    res.json({ success: true, model: sanitized });
 });

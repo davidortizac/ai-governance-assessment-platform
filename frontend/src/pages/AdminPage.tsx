@@ -1,6 +1,7 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import api from '../lib/api';
 import toast from 'react-hot-toast';
+import { useNavigate } from 'react-router-dom';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface AssessmentRow {
@@ -53,6 +54,19 @@ const ANSWER_LABELS: Record<number, string> = {
     0: 'N/A', 1: 'No iniciado', 3: 'En progreso', 5: 'Completado',
 };
 
+interface UserRow {
+    id: string;
+    email: string;
+    name: string;
+    role: 'ADMIN' | 'CONSULTANT' | 'CLIENT';
+    createdAt: string;
+    _count: { assessments: number; clients: number };
+}
+
+interface DbStats {
+    users: number; clients: number; assessments: number; answers: number; pillars: number; questions: number;
+}
+
 // ─── LLM status type ──────────────────────────────────────────────────────────
 interface LLMStatus {
     connected: boolean;
@@ -65,7 +79,8 @@ interface LLMStatus {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function AdminPage() {
-    const [mainView, setMainView]   = useState<'assessments' | 'llm-config'>('assessments');
+    const navigate = useNavigate();
+    const [mainView, setMainView]   = useState<'assessments' | 'llm-config' | 'users' | 'db'>('assessments');
     const [rows, setRows]           = useState<AssessmentRow[]>([]);
     const [loading, setLoading]     = useState(true);
     const [detail, setDetail]       = useState<AssessmentDetail | null>(null);
@@ -87,6 +102,22 @@ export default function AdminPage() {
     const [llmApiKey, setLlmApiKey]         = useState('');
     const [showApiKey, setShowApiKey]       = useState(false);
     const [configSaving, setConfigSaving]   = useState(false);
+
+    // Users state
+    const [users, setUsers]             = useState<UserRow[]>([]);
+    const [usersLoading, setUsersLoading] = useState(false);
+    const [deletingUser, setDeletingUser] = useState<string | null>(null);
+
+    // DB maintenance state
+    const [dbStats, setDbStats]         = useState<DbStats | null>(null);
+    const [dbLoading, setDbLoading]     = useState(false);
+    const [exporting, setExporting]     = useState(false);
+    const [restoring, setRestoring]     = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    // Context menu state for row actions
+    const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; row: AssessmentRow } | null>(null);
+    const ctxRef = useRef<HTMLDivElement>(null);
 
     // ── Load list ─────────────────────────────────────────────────────────────
     const loadList = useCallback(() => {
@@ -237,6 +268,105 @@ export default function AdminPage() {
         }
     };
 
+    // ── Users ──────────────────────────────────────────────────────────────────
+    const loadUsers = useCallback(() => {
+        setUsersLoading(true);
+        api.get('/admin/users')
+            .then(r => setUsers(r.data))
+            .catch(() => toast.error('Error cargando usuarios'))
+            .finally(() => setUsersLoading(false));
+    }, []);
+
+    const handleDeleteUser = async (u: UserRow) => {
+        if (!globalThis.confirm(`¿Eliminar usuario "${u.name}" (${u.email})? Esta acción no se puede deshacer.`)) return;
+        setDeletingUser(u.id);
+        try {
+            await api.delete(`/admin/users/${u.id}`);
+            toast.success('Usuario eliminado');
+            setUsers(prev => prev.filter(x => x.id !== u.id));
+        } catch (err: any) {
+            toast.error(err.response?.data?.error ?? 'Error al eliminar usuario');
+        } finally {
+            setDeletingUser(null);
+        }
+    };
+
+    const handleBackupUser = async (u: UserRow) => {
+        try {
+            const res = await api.get(`/admin/backup/user/${u.id}`, { responseType: 'blob' });
+            const blob = new Blob([res.data], { type: 'application/json' });
+            const url = globalThis.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `backup_${u.name.split(/\s+/).join('_')}_${new Date().toISOString().slice(0, 10)}.json`;
+            link.style.display = 'none';
+            document.body.appendChild(link);
+            link.click();
+            setTimeout(() => { link.remove(); globalThis.URL.revokeObjectURL(url); }, 3000);
+            toast.success('Backup descargado');
+        } catch {
+            toast.error('Error al exportar datos del usuario');
+        }
+    };
+
+    // ── DB Maintenance ──────────────────────────────────────────────────────────
+    const loadDbStats = useCallback(() => {
+        setDbLoading(true);
+        api.get('/admin/db/stats')
+            .then(r => setDbStats(r.data))
+            .catch(() => toast.error('Error cargando estadísticas'))
+            .finally(() => setDbLoading(false));
+    }, []);
+
+    const handleDbExport = async () => {
+        setExporting(true);
+        try {
+            const res = await api.get('/admin/db/export', { responseType: 'blob' });
+            const blob = new Blob([res.data], { type: 'application/json' });
+            const url = globalThis.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `gamma_backup_${new Date().toISOString().slice(0, 10)}.json`;
+            link.style.display = 'none';
+            document.body.appendChild(link);
+            link.click();
+            setTimeout(() => { link.remove(); globalThis.URL.revokeObjectURL(url); }, 3000);
+            toast.success('Exportación completada');
+        } catch {
+            toast.error('Error al exportar base de datos');
+        } finally {
+            setExporting(false);
+        }
+    };
+
+    const handleDbRestore = async (file: File) => {
+        setRestoring(true);
+        try {
+            const text = await file.text();
+            const data = JSON.parse(text);
+            const res = await api.post('/admin/db/restore', data);
+            const s = res.data.stats;
+            toast.success(`Restauración: ${s.clients} clientes, ${s.assessments} evaluaciones, ${s.answers} respuestas`);
+            loadDbStats();
+            loadList();
+        } catch (err: any) {
+            toast.error(err.response?.data?.error ?? 'Error al restaurar datos');
+        } finally {
+            setRestoring(false);
+            if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+    };
+
+    // ── Context menu close on click-outside ─────────────────────────────────────
+    useEffect(() => {
+        if (!ctxMenu) return;
+        const handler = (e: MouseEvent) => {
+            if (ctxRef.current && !ctxRef.current.contains(e.target as Node)) setCtxMenu(null);
+        };
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, [ctxMenu]);
+
     // ── Filtered rows ─────────────────────────────────────────────────────────
     const filtered = rows.filter(r => {
         if (!filters.search) return true;
@@ -276,14 +406,16 @@ export default function AdminPage() {
                 </div>
 
                 {/* View toggle */}
-                <div className="flex gap-1 mb-5 bg-surface-800/50 p-1 rounded-xl w-fit border border-primary-800/20">
+                <div className="flex gap-1 mb-5 bg-surface-800/50 p-1 rounded-xl w-fit border border-primary-800/20 flex-wrap">
                     {([
-                        { key: 'assessments', label: 'Evaluaciones', icon: '📋' },
-                        { key: 'llm-config',  label: 'Configuración IA', icon: '🤖' },
+                        { key: 'assessments', label: 'Evaluaciones', icon: '📋', onMount: () => {} },
+                        { key: 'users',       label: 'Usuarios',     icon: '👥', onMount: () => { if (users.length === 0) loadUsers(); } },
+                        { key: 'llm-config',  label: 'Config IA',    icon: '🤖', onMount: () => { if (!llmStatus) testLLMConnection(); } },
+                        { key: 'db',          label: 'Base de Datos', icon: '🗄️', onMount: () => { if (!dbStats) loadDbStats(); } },
                     ] as const).map(v => (
                         <button
                             key={v.key}
-                            onClick={() => { setMainView(v.key); if (v.key === 'llm-config' && !llmStatus) testLLMConnection(); }}
+                            onClick={() => { setMainView(v.key); v.onMount(); }}
                             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all
                                 ${mainView === v.key
                                     ? 'bg-primary-500/15 text-primary-300 border border-primary-500/30 shadow-sm'
@@ -585,6 +717,7 @@ export default function AdminPage() {
                                     <tr
                                         key={row.id}
                                         onClick={() => openDetail(row.id)}
+                                        onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, row }); }}
                                         className={`border-b border-primary-800/10 hover:bg-primary-500/5 cursor-pointer transition-colors ${detail?.id === row.id ? 'bg-primary-500/10' : ''}`}
                                     >
                                         <td className="px-4 py-3 font-medium text-surface-200 whitespace-nowrap max-w-36 truncate">
@@ -643,7 +776,57 @@ export default function AdminPage() {
                         </table>
                     )}
                 </div>
+
+                {/* Context menu */}
+                {ctxMenu && (
+                    <div
+                        ref={ctxRef}
+                        className="fixed z-50 w-56 bg-surface-800 border border-surface-700 rounded-xl shadow-2xl overflow-hidden"
+                        style={{ left: ctxMenu.x, top: ctxMenu.y }}
+                    >
+                        <div className="px-3 pt-3 pb-1">
+                            <p className="text-[10px] font-semibold text-surface-500 uppercase tracking-wider truncate">{ctxMenu.row.client.name}</p>
+                        </div>
+                        <CtxMenuItem label="Ver Assessment" icon="📋" onClick={() => { setCtxMenu(null); openDetail(ctxMenu.row.id); }} />
+                        <CtxMenuItem label="Ver Resultados" icon="📊" disabled={ctxMenu.row.status !== 'COMPLETED'}
+                            onClick={() => { setCtxMenu(null); navigate(`/assessments/${ctxMenu.row.id}/results`); }} />
+                        <div className="border-t border-surface-700 my-1" />
+                        <CtxMenuItem label="Generar Informe" icon="🤖" disabled={ctxMenu.row.status !== 'COMPLETED'}
+                            onClick={() => { setCtxMenu(null); openDetail(ctxMenu.row.id); setActiveTab('llm'); }} />
+                        <CtxMenuItem label="Descargar PDF" icon="📄" disabled={ctxMenu.row.status !== 'COMPLETED' || !ctxMenu.row.hasLlmAnalysis}
+                            onClick={() => { setCtxMenu(null); downloadReport(ctxMenu.row.id, 'pdf'); }} />
+                        <div className="border-t border-surface-700 my-1" />
+                        <CtxMenuItem label="Eliminar Assessment" icon="🗑" danger
+                            onClick={() => { setCtxMenu(null); handleDelete(ctxMenu.row.id, ctxMenu.row.client.name); }} />
+                    </div>
+                )}
                 </>)}
+
+                {/* ── Users view ─────────────────────────────────────────────── */}
+                {mainView === 'users' && (
+                    <UsersView
+                        users={users}
+                        loading={usersLoading}
+                        deletingUser={deletingUser}
+                        onRefresh={loadUsers}
+                        onDelete={handleDeleteUser}
+                        onBackup={handleBackupUser}
+                    />
+                )}
+
+                {/* ── DB Maintenance view ────────────────────────────────────── */}
+                {mainView === 'db' && (
+                    <DbView
+                        stats={dbStats}
+                        loading={dbLoading}
+                        exporting={exporting}
+                        restoring={restoring}
+                        fileInputRef={fileInputRef}
+                        onRefresh={loadDbStats}
+                        onExport={handleDbExport}
+                        onRestore={handleDbRestore}
+                    />
+                )}
             </div>
 
             {/* ── Right: Detail panel ──────────────────────────────────────── */}
@@ -965,6 +1148,207 @@ function LLMSection({ title, text }: { title: string; text: string }) {
         <div>
             <h4 className="text-xs font-semibold text-surface-400 uppercase tracking-wider mb-1">{title}</h4>
             <p className="text-xs text-surface-300 leading-relaxed bg-surface-800/30 rounded-lg p-3">{text}</p>
+        </div>
+    );
+}
+
+function CtxMenuItem({ label, icon, danger, disabled, onClick }: Readonly<{
+    label: string; icon: string; danger?: boolean; disabled?: boolean; onClick: () => void;
+}>) {
+    return (
+        <button
+            onClick={onClick}
+            disabled={disabled}
+            className={`menu-item ${danger ? 'text-red-400 hover:bg-red-500/10' : ''}`}
+        >
+            <span className="menu-icon text-sm">{icon}</span>
+            <span>{label}</span>
+        </button>
+    );
+}
+
+const ROLE_CFG: Record<string, { label: string; cls: string }> = {
+    ADMIN:      { label: 'Admin',     cls: 'badge-danger'  },
+    CONSULTANT: { label: 'Consultor', cls: 'badge-info'    },
+    CLIENT:     { label: 'Cliente',   cls: 'badge-neutral' },
+};
+
+function UsersView({ users, loading, deletingUser, onRefresh, onDelete, onBackup }: Readonly<{
+    users: UserRow[]; loading: boolean; deletingUser: string | null;
+    onRefresh: () => void; onDelete: (u: UserRow) => void; onBackup: (u: UserRow) => void;
+}>) {
+    return (
+        <div className="space-y-4">
+            <div className="flex items-center justify-between">
+                <span className="text-xs text-surface-500 bg-surface-800 px-3 py-1.5 rounded-lg border border-primary-800/20">
+                    {users.length} usuario{users.length !== 1 ? 's' : ''}
+                </span>
+                <button onClick={onRefresh} className="btn-secondary text-sm flex items-center gap-2">
+                    <span>↺</span> Actualizar
+                </button>
+            </div>
+
+            <div className="glass-card overflow-x-auto">
+                {loading ? (
+                    <div className="flex items-center justify-center py-16">
+                        <div className="animate-spin w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full" />
+                    </div>
+                ) : users.length === 0 ? (
+                    <div className="text-center py-16 text-surface-500">
+                        <p className="text-4xl mb-3">👥</p>
+                        <p>No hay usuarios registrados</p>
+                    </div>
+                ) : (
+                    <table className="w-full text-sm">
+                        <thead>
+                            <tr className="border-b border-primary-800/20">
+                                {['Nombre', 'Email', 'Rol', 'Evaluaciones', 'Clientes', 'Registro', 'Acciones'].map(h => (
+                                    <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-surface-400 uppercase tracking-wider whitespace-nowrap">{h}</th>
+                                ))}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {users.map(u => (
+                                <tr key={u.id} className="border-b border-primary-800/10 hover:bg-primary-500/5 transition-colors">
+                                    <td className="px-4 py-3 font-medium text-surface-200 whitespace-nowrap">{u.name}</td>
+                                    <td className="px-4 py-3 text-surface-400 whitespace-nowrap">{u.email}</td>
+                                    <td className="px-4 py-3 whitespace-nowrap">
+                                        <span className={`${ROLE_CFG[u.role]?.cls} text-xs px-2 py-0.5 rounded-full`}>{ROLE_CFG[u.role]?.label}</span>
+                                    </td>
+                                    <td className="px-4 py-3 text-surface-400 text-center">{u._count.assessments}</td>
+                                    <td className="px-4 py-3 text-surface-400 text-center">{u._count.clients}</td>
+                                    <td className="px-4 py-3 text-surface-500 whitespace-nowrap text-xs">{new Date(u.createdAt).toLocaleDateString('es-ES')}</td>
+                                    <td className="px-4 py-3 whitespace-nowrap">
+                                        <div className="flex items-center gap-1">
+                                            <button
+                                                onClick={() => onBackup(u)}
+                                                className="text-xs text-primary-400/70 hover:text-primary-400 px-2 py-1 rounded hover:bg-primary-500/10 transition-colors"
+                                                title="Exportar datos del usuario"
+                                            >
+                                                💾
+                                            </button>
+                                            <button
+                                                onClick={() => onDelete(u)}
+                                                disabled={deletingUser === u.id || u.role === 'ADMIN'}
+                                                className="text-xs text-red-400/60 hover:text-red-400 px-2 py-1 rounded hover:bg-red-500/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                                title={u.role === 'ADMIN' ? 'No se puede eliminar un administrador' : 'Eliminar usuario'}
+                                            >
+                                                {deletingUser === u.id ? '...' : '🗑'}
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                )}
+            </div>
+        </div>
+    );
+}
+
+function StatCard({ label, value, icon }: Readonly<{ label: string; value: number; icon: string }>) {
+    return (
+        <div className="bg-surface-800/50 rounded-xl p-4 border border-primary-800/20">
+            <div className="flex items-center gap-3">
+                <span className="text-2xl">{icon}</span>
+                <div>
+                    <p className="text-2xl font-bold text-primary-400">{value.toLocaleString()}</p>
+                    <p className="text-xs text-surface-500">{label}</p>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function DbView({ stats, loading, exporting, restoring, fileInputRef, onRefresh, onExport, onRestore }: Readonly<{
+    stats: DbStats | null; loading: boolean; exporting: boolean; restoring: boolean;
+    fileInputRef: React.RefObject<HTMLInputElement>;
+    onRefresh: () => void; onExport: () => void; onRestore: (f: File) => void;
+}>) {
+    return (
+        <div className="space-y-5 max-w-3xl">
+            {/* Stats */}
+            <div className="glass-card p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                    <h2 className="text-base font-semibold text-surface-100 flex items-center gap-2">
+                        <span>📊</span> Estadísticas de la Base de Datos
+                    </h2>
+                    <button onClick={onRefresh} disabled={loading} className="btn-secondary text-sm flex items-center gap-2">
+                        {loading ? <span className="animate-spin inline-block">↺</span> : '↺'} Actualizar
+                    </button>
+                </div>
+
+                {stats ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                        <StatCard label="Usuarios" value={stats.users} icon="👤" />
+                        <StatCard label="Clientes" value={stats.clients} icon="🏢" />
+                        <StatCard label="Evaluaciones" value={stats.assessments} icon="📋" />
+                        <StatCard label="Respuestas" value={stats.answers} icon="✅" />
+                        <StatCard label="Pilares" value={stats.pillars} icon="🏛️" />
+                        <StatCard label="Preguntas" value={stats.questions} icon="❓" />
+                    </div>
+                ) : (
+                    <div className="text-center py-6 text-surface-500 text-sm">
+                        {loading ? 'Cargando estadísticas...' : 'Haz clic en "Actualizar" para cargar las estadísticas'}
+                    </div>
+                )}
+            </div>
+
+            {/* Export */}
+            <div className="glass-card p-5 space-y-4">
+                <h2 className="text-base font-semibold text-surface-100 flex items-center gap-2">
+                    <span>💾</span> Copia de Seguridad
+                </h2>
+                <p className="text-xs text-surface-500">
+                    Exporta todos los datos de la aplicación en formato JSON. Este archivo puede ser restaurado en otra instancia de la aplicación.
+                </p>
+                <button
+                    onClick={onExport}
+                    disabled={exporting}
+                    className="btn-primary text-sm flex items-center gap-2"
+                >
+                    {exporting
+                        ? <><span className="animate-spin inline-block">↺</span> Exportando...</>
+                        : <><span>⬇</span> Exportar Base de Datos</>
+                    }
+                </button>
+            </div>
+
+            {/* Restore */}
+            <div className="glass-card p-5 space-y-4">
+                <h2 className="text-base font-semibold text-surface-100 flex items-center gap-2">
+                    <span>🔄</span> Restaurar Datos
+                </h2>
+                <p className="text-xs text-surface-500">
+                    Importa datos desde un archivo de backup JSON. Los registros existentes no se duplican.
+                </p>
+                <div className="flex items-center gap-3">
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".json"
+                        className="hidden"
+                        onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) onRestore(file);
+                        }}
+                    />
+                    <button
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={restoring}
+                        className="btn-secondary text-sm flex items-center gap-2"
+                    >
+                        {restoring
+                            ? <><span className="animate-spin inline-block">↺</span> Restaurando...</>
+                            : <><span>⬆</span> Seleccionar archivo de backup</>
+                        }
+                    </button>
+                </div>
+                <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300">
+                    <span className="font-medium">Nota:</span> La restauración agrega datos que no existen. No modifica ni elimina registros existentes.
+                </div>
+            </div>
         </div>
     );
 }
