@@ -608,6 +608,15 @@ export default function ResultsPage() {
                                 <span className="text-sm font-medium" style={{ color: 'var(--text-base)' }}>Vista previa del informe PDF</span>
                             </div>
                             <div className="flex items-center gap-2">
+                                <a
+                                    href={pdfPreviewUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="btn-secondary px-3 py-1.5 text-sm flex items-center gap-1.5"
+                                    title="Abrir en nueva pestaña"
+                                >
+                                    <IconEye /> Abrir
+                                </a>
                                 <button
                                     onClick={() => { closePreview(); setPdfModalOpen(true); }}
                                     className="btn-primary px-3 py-1.5 text-sm flex items-center gap-1.5"
@@ -626,13 +635,24 @@ export default function ResultsPage() {
                                 </button>
                             </div>
                         </div>
-                        <div className="flex-1 bg-surface-900">
-                            <iframe
-                                src={pdfPreviewUrl}
-                                className="w-full h-full border-0"
-                                title="Vista previa PDF"
-                                sandbox="allow-same-origin"
-                            />
+                        <div className="flex-1 bg-surface-900 relative">
+                            <object
+                                data={pdfPreviewUrl}
+                                type="application/pdf"
+                                className="w-full h-full"
+                            >
+                                {/* Fallback if browser can't render PDF inline */}
+                                <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-surface-400">
+                                    <p className="text-sm">Tu navegador no puede mostrar el PDF directamente.</p>
+                                    <a
+                                        href={pdfPreviewUrl}
+                                        download={buildSuggestedPdfName()}
+                                        className="btn-primary px-4 py-2 text-sm flex items-center gap-2"
+                                    >
+                                        <IconDownload /> Descargar PDF
+                                    </a>
+                                </div>
+                            </object>
                         </div>
                     </div>
                 </div>
