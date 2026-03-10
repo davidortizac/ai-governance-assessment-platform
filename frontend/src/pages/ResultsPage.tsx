@@ -563,6 +563,31 @@ export default function ResultsPage() {
                 </div>
             </div>
 
+            {/* Client Context */}
+            {assessment.contextData && typeof assessment.contextData === 'object' &&
+                Object.values(assessment.contextData as Record<string, string>).some(v => v && String(v).trim() !== '') && (
+                <div className="glass-card p-6">
+                    <h3 className="text-lg font-semibold text-surface-100 mb-4">Contexto del Cliente</h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        {[
+                            { key: 'totalUsers', label: 'Usuarios / Empleados', icon: '👥' },
+                            { key: 'infoSystems', label: 'Sistemas de Información', icon: '🖥️' },
+                            { key: 'aiModelsUsed', label: 'Modelos / Herramientas de IA', icon: '🤖' },
+                            { key: 'aiBudget', label: 'Presupuesto IA', icon: '💰' },
+                        ].map(({ key, label, icon }) => {
+                            const val = (assessment.contextData as Record<string, string>)[key];
+                            if (!val || String(val).trim() === '') return null;
+                            return (
+                                <div key={key} className="p-4 bg-surface-800/30 rounded-lg border border-surface-700/30">
+                                    <p className="text-xs text-surface-400 mb-1">{icon} {label}</p>
+                                    <p className="text-sm font-medium text-surface-200">{val}</p>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+
             {/* Maturity Scale */}
             <div className="glass-card p-6">
                 <h3 className="text-lg font-semibold text-surface-100 mb-4">Escala de Madurez</h3>

@@ -179,10 +179,15 @@ assessmentRouter.post('/:id/answers', async (req: AuthRequest, res: Response): P
             });
         }
 
-        // Update assessment status
+        // Save optional organizational context data
+        const updateData: any = { status: 'IN_PROGRESS' };
+        if (req.body.contextData && typeof req.body.contextData === 'object') {
+            updateData.contextData = req.body.contextData;
+        }
+
         await prisma.assessment.update({
             where: { id: req.params.id },
-            data: { status: 'IN_PROGRESS' },
+            data: updateData,
         });
 
         res.json({ message: 'Respuestas guardadas' });

@@ -10,6 +10,23 @@ export const authRouter = Router();
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
+/** Resolve tenant ID from a hosted domain, falling back to the default tenant. */
+async function resolveTenantId(hostedDomain?: string): Promise<string> {
+    if (hostedDomain) {
+        const tenant = await prisma.tenant.findFirst({ where: { domain: hostedDomain } });
+        if (tenant) return tenant.id;
+    }
+    let defaultTenant = await prisma.tenant.findFirst({ where: { domain: 'default' } });
+    defaultTenant ??= await prisma.tenant.create({ data: { name: 'Default Organization', domain: 'default' } });
+    return defaultTenant.id;
+}
+
+/** Assign role based on email domain: @gammaingenieros.com → CONSULTANT, else → CLIENT. */
+function roleForEmail(email: string): 'CONSULTANT' | 'CLIENT' {
+    const domain = email.split('@')[1]?.toLowerCase();
+    return domain === 'gammaingenieros.com' ? 'CONSULTANT' : 'CLIENT';
+}
+
 // POST /api/auth/google — Login with Google OAuth
 authRouter.post('/google', async (req: AuthRequest, res: Response): Promise<void> => {
     try {
@@ -20,49 +37,23 @@ authRouter.post('/google', async (req: AuthRequest, res: Response): Promise<void
             return;
         }
 
-        // Verify the Google ID token
         const ticket = await googleClient.verifyIdToken({
             idToken: credential,
             audience: GOOGLE_CLIENT_ID,
         });
 
         const payload = ticket.getPayload();
-        if (!payload || !payload.email) {
+        if (!payload?.email) {
             res.status(401).json({ error: 'Token de Google inválido' });
             return;
         }
 
-        const { email, name, sub: googleId, hd: hostedDomain } = payload;
+        const { email, name, hd: hostedDomain } = payload;
 
-        // Find or create user
         let user = await prisma.user.findUnique({ where: { email } });
 
         if (!user) {
-            // Auto-create user on first Google login
-            // Try to find a tenant matching the corporate domain
-            let tenantId: string | undefined;
-
-            if (hostedDomain) {
-                const tenant = await prisma.tenant.findFirst({
-                    where: { domain: hostedDomain },
-                });
-                if (tenant) {
-                    tenantId = tenant.id;
-                }
-            }
-
-            // If no matching tenant, use or create default
-            if (!tenantId) {
-                let defaultTenant = await prisma.tenant.findFirst({ where: { domain: 'default' } });
-                if (!defaultTenant) {
-                    defaultTenant = await prisma.tenant.create({
-                        data: { name: 'Default Organization', domain: 'default' },
-                    });
-                }
-                tenantId = defaultTenant.id;
-            }
-
-            // Create user with a random password (they'll only use Google login)
+            const tenantId = await resolveTenantId(hostedDomain);
             const randomPassword = await bcrypt.hash(randomBytes(32).toString('hex'), 12);
 
             user = await prisma.user.create({
@@ -70,15 +61,14 @@ authRouter.post('/google', async (req: AuthRequest, res: Response): Promise<void
                     email,
                     password: randomPassword,
                     name: name || email.split('@')[0],
-                    role: 'CLIENT', // Default role for Google login users
+                    role: roleForEmail(email),
                     tenantId,
                 },
             });
 
-            console.log(`✅ New user created via Google OAuth: ${email} (domain: ${hostedDomain || 'personal'})`);
+            console.log(`New user created via Google OAuth: ${email} (domain: ${hostedDomain || 'personal'})`);
         }
 
-        // Generate JWT
         const token = jwt.sign(
             { userId: user.id, email: user.email, role: user.role, tenantId: user.tenantId },
             JWT_SECRET,
@@ -121,27 +111,15 @@ authRouter.post('/register', async (req: AuthRequest, res: Response): Promise<vo
         }
 
         const hashedPassword = await bcrypt.hash(password, 12);
-
-        // If no tenant exists yet, create a default one
-        // NOTE: role is always CLIENT — never accept role from user input
-        let finalTenantId: string | undefined;
-        if (!finalTenantId) {
-            let defaultTenant = await prisma.tenant.findFirst({ where: { domain: 'default' } });
-            if (!defaultTenant) {
-                defaultTenant = await prisma.tenant.create({
-                    data: { name: 'Default Organization', domain: 'default' },
-                });
-            }
-            finalTenantId = defaultTenant.id;
-        }
+        const tenantId = await resolveTenantId();
 
         const user = await prisma.user.create({
             data: {
                 email,
                 password: hashedPassword,
                 name,
-                role: 'CLIENT',
-                tenantId: finalTenantId,
+                role: roleForEmail(email),
+                tenantId,
             },
         });
 

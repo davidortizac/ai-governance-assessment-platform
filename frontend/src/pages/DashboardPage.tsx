@@ -112,6 +112,74 @@ export default function DashboardPage() {
                 </div>
             </div>
 
+            {/* CSIA Framework Info */}
+            <div className="glass-card p-6 space-y-5">
+                <div>
+                    <h2 className="text-lg font-bold text-surface-100">Metodología CSIA — AI Cybersecurity Maturity Assessment</h2>
+                    <p className="text-sm text-surface-400 mt-2 leading-relaxed">
+                        La evaluación CSIA mide el nivel de madurez de una organización en la adopción segura y gobernada de inteligencia artificial,
+                        analizando seis pilares estratégicos que cubren desde la gobernanza y cumplimiento normativo hasta la protección técnica
+                        de modelos y datos. El resultado permite identificar brechas, priorizar acciones y establecer una hoja de ruta de mejora continua.
+                    </p>
+                </div>
+
+                {/* Frameworks */}
+                <div>
+                    <h3 className="text-xs font-semibold text-surface-500 uppercase tracking-wider mb-3">Marcos de Referencia Integrados</h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="rounded-xl p-4 border-l-[3px]" style={{ borderColor: '#3B82F6', background: 'rgba(59,130,246,0.06)' }}>
+                            <p className="text-sm font-semibold text-surface-200">NIST AI RMF</p>
+                            <p className="text-xs text-surface-500 mt-1">Marco de gestión de riesgos de IA del NIST — Govern, Map, Measure, Manage.</p>
+                        </div>
+                        <div className="rounded-xl p-4 border-l-[3px]" style={{ borderColor: '#7C3AED', background: 'rgba(124,58,237,0.06)' }}>
+                            <p className="text-sm font-semibold text-surface-200">MITRE ATLAS</p>
+                            <p className="text-xs text-surface-500 mt-1">Tácticas y técnicas adversarias contra sistemas de machine learning.</p>
+                        </div>
+                        <div className="rounded-xl p-4 border-l-[3px]" style={{ borderColor: '#059669', background: 'rgba(5,150,105,0.06)' }}>
+                            <p className="text-sm font-semibold text-surface-200">Gartner TRiSM</p>
+                            <p className="text-xs text-surface-500 mt-1">Trust, Risk and Security Management para IA — confianza, riesgo y seguridad.</p>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Scoring scale */}
+                <div>
+                    <h3 className="text-xs font-semibold text-surface-500 uppercase tracking-wider mb-3">Escala de Calificación (0 – 4)</h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
+                        {[
+                            { score: 0, label: 'Inexistente', color: '#DC2626', desc: 'No existen prácticas, controles ni conciencia sobre el tema evaluado.' },
+                            { score: 1, label: 'Inicial', color: '#F97316', desc: 'Esfuerzos ad-hoc o reactivos, sin procesos formalizados.' },
+                            { score: 2, label: 'Emergente', color: '#D97706', desc: 'Procesos parcialmente definidos, aplicados de forma inconsistente.' },
+                            { score: 3, label: 'Definido', color: '#2563EB', desc: 'Procesos documentados, implementados y monitoreados regularmente.' },
+                            { score: 4, label: 'Optimizado', color: '#059669', desc: 'Mejora continua, automatización e innovación activa.' },
+                        ].map(item => (
+                            <div key={item.score} className="rounded-xl p-3 border border-surface-700/50" style={{ background: 'rgba(255,255,255,0.03)' }}>
+                                <div className="flex items-center gap-2 mb-1.5">
+                                    <span className="w-6 h-6 rounded-md flex items-center justify-center text-xs font-bold text-white" style={{ background: item.color }}>
+                                        {item.score}
+                                    </span>
+                                    <span className="text-sm font-semibold text-surface-200">{item.label}</span>
+                                </div>
+                                <p className="text-[11px] text-surface-500 leading-relaxed">{item.desc}</p>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Assessment procedure */}
+                <div className="rounded-xl p-4" style={{ background: 'rgba(201,168,76,0.06)', border: '1px solid rgba(201,168,76,0.15)' }}>
+                    <h3 className="text-xs font-semibold uppercase tracking-wider mb-2" style={{ color: '#C9A84C' }}>Procedimiento de Evaluación</h3>
+                    <ol className="text-xs text-surface-400 space-y-1 list-decimal list-inside leading-relaxed">
+                        <li>Registrar la organización a evaluar como cliente de la plataforma.</li>
+                        <li>Crear un assessment (Express o Avanzado) asociado al cliente.</li>
+                        <li>Responder cada pregunta de los 6 pilares CSIA usando la escala 0-4.</li>
+                        <li>Al completar, el sistema calcula scores por pilar, score general, nivel de madurez y nivel de riesgo.</li>
+                        <li>Un modelo de IA analiza los resultados y genera un informe con hallazgos, brechas y recomendaciones.</li>
+                        <li>Descargar el reporte PDF profesional con el análisis completo.</li>
+                    </ol>
+                </div>
+            </div>
+
             {/* Search + header */}
             <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                 <input
