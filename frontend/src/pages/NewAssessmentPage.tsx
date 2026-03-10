@@ -5,6 +5,7 @@ import api from '../lib/api';
 interface Question {
     id: string;
     text: string;
+    hint?: string | null;
     pillar: { id: string; name: string; key: string };
     order: number;
 }
@@ -14,6 +15,13 @@ interface AnswerData {
     score: number;
     notApplicable: boolean;
 }
+
+const CONTEXT_QUESTIONS = [
+    { key: 'totalUsers', label: 'Cantidad aproximada de usuarios/empleados', type: 'number' as const, placeholder: 'Ej: 250' },
+    { key: 'infoSystems', label: 'Principales sistemas de información que utiliza', type: 'text' as const, placeholder: 'Ej: SAP, Salesforce, Office 365, Google Workspace...' },
+    { key: 'aiModelsUsed', label: 'Modelos o herramientas de IA que ha adoptado o utiliza', type: 'text' as const, placeholder: 'Ej: ChatGPT, Copilot, modelos internos, ninguno...' },
+    { key: 'aiBudget', label: 'Presupuesto estimado para proyectos de IA este año', type: 'text' as const, placeholder: 'Ej: $50.000 USD, No definido, En evaluación...' },
+];
 
 export default function NewAssessmentPage() {
     const navigate = useNavigate();
@@ -30,6 +38,8 @@ export default function NewAssessmentPage() {
     const [currentPillar, setCurrentPillar] = useState(0);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [expandedHints, setExpandedHints] = useState<Set<string>>(new Set());
+    const [contextData, setContextData] = useState<Record<string, string>>({});
 
     // Load clients
     useEffect(() => {
@@ -55,6 +65,9 @@ export default function NewAssessmentPage() {
                     });
                 });
                 setAnswers(existingAnswers);
+                if (data.contextData && typeof data.contextData === 'object') {
+                    setContextData(data.contextData);
+                }
                 setStep('questions');
             }).catch(console.error);
         }
@@ -101,8 +114,13 @@ export default function NewAssessmentPage() {
         if (!assessmentId) return;
         setStep('submitting');
         try {
+            // Filter out empty context fields
+            const filteredContext = Object.fromEntries(
+                Object.entries(contextData).filter(([, v]) => v.trim() !== '')
+            );
             await api.post(`/assessments/${assessmentId}/answers`, {
                 answers: Array.from(answers.values()),
+                ...(Object.keys(filteredContext).length > 0 && { contextData: filteredContext }),
             });
             const result = await api.post(`/assessments/${assessmentId}/calculate`);
             navigate(`/assessments/${assessmentId}/results`);
@@ -198,6 +216,7 @@ export default function NewAssessmentPage() {
     }
 
     const currentGroup = pillarGroups[currentPillar];
+    const isContextTab = currentPillar === pillarGroups.length;
 
     return (
         <div className="max-w-3xl mx-auto space-y-6 fade-in">
@@ -224,7 +243,7 @@ export default function NewAssessmentPage() {
                 </div>
             </div>
 
-            {/* Pillar tabs */}
+            {/* Pillar tabs + Context tab */}
             <div className="flex gap-2 overflow-x-auto pb-2">
                 {pillarGroups.map((group, i) => {
                     const pillarAnswered = group.questions.filter(q => answers.has(q.id)).length;
@@ -245,10 +264,48 @@ export default function NewAssessmentPage() {
                         </button>
                     );
                 })}
+                <button
+                    onClick={() => setCurrentPillar(pillarGroups.length)}
+                    className={`shrink-0 px-4 py-2 rounded-lg text-xs font-medium transition-all ${isContextTab
+                        ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                        : 'bg-surface-800/50 text-surface-400 border border-surface-700/50 hover:border-surface-600'
+                    }`}
+                >
+                    Contexto del Cliente
+                </button>
             </div>
 
+            {/* Context tab content */}
+            {isContextTab && (
+                <div className="space-y-4">
+                    <div>
+                        <h2 className="text-lg font-semibold text-surface-100">Contexto del Cliente</h2>
+                        <p className="text-xs text-surface-500 mt-1">
+                            Información opcional que enriquece el análisis de IA. Puedes dejar los campos vacíos.
+                        </p>
+                    </div>
+                    {CONTEXT_QUESTIONS.map(cq => (
+                        <div key={cq.key} className="glass-card p-5">
+                            <label htmlFor={`ctx-${cq.key}`} className="block text-sm text-surface-200 mb-2">{cq.label}</label>
+                            <input
+                                id={`ctx-${cq.key}`}
+                                type={cq.type}
+                                value={contextData[cq.key] ?? ''}
+                                onChange={e => setContextData(prev => ({ ...prev, [cq.key]: e.target.value }))}
+                                placeholder={cq.placeholder}
+                                className="input-field w-full"
+                            />
+                        </div>
+                    ))}
+                    <div className="rounded-xl px-4 py-3 text-xs text-surface-500 leading-relaxed"
+                        style={{ background: 'rgba(201,168,76,0.06)', border: '1px solid rgba(201,168,76,0.15)' }}>
+                        Estos datos son opcionales y se utilizan para contextualizar el análisis generado por IA, permitiendo recomendaciones más relevantes para la organización.
+                    </div>
+                </div>
+            )}
+
             {/* Questions */}
-            {currentGroup && (
+            {currentGroup && !isContextTab && (
                 <div className="space-y-4">
                     <h2 className="text-lg font-semibold text-surface-100">{currentGroup.pillar}</h2>
                     {currentGroup.questions.map((q, qi) => {
@@ -256,7 +313,32 @@ export default function NewAssessmentPage() {
                         const isNA = currentAnswer?.notApplicable || false;
                         return (
                             <div key={q.id} className="glass-card p-5 slide-in" style={{ animationDelay: `${qi * 0.05}s` }}>
-                                <p className="text-sm text-surface-200 mb-4">{qi + 1}. {q.text}</p>
+                                <div className="flex items-start gap-2 mb-4">
+                                    <p className="text-sm text-surface-200 flex-1">{qi + 1}. {q.text}</p>
+                                    {q.hint && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setExpandedHints(prev => {
+                                                const next = new Set(prev);
+                                                if (next.has(q.id)) next.delete(q.id); else next.add(q.id);
+                                                return next;
+                                            })}
+                                            className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-all ${expandedHints.has(q.id)
+                                                ? 'bg-primary-500/20 text-primary-400 border border-primary-500/30'
+                                                : 'bg-surface-800/50 text-surface-500 border border-surface-700/50 hover:text-primary-400 hover:border-primary-500/30'
+                                            }`}
+                                            title="Ver información sobre esta pregunta"
+                                        >
+                                            i
+                                        </button>
+                                    )}
+                                </div>
+                                {q.hint && expandedHints.has(q.id) && (
+                                    <div className="mb-4 px-3 py-2.5 rounded-lg text-xs text-surface-400 leading-relaxed border-l-[3px]"
+                                        style={{ background: 'rgba(59,130,246,0.06)', borderColor: '#3B82F6' }}>
+                                        {q.hint}
+                                    </div>
+                                )}
 
                                 <div className="flex flex-wrap items-center gap-2">
                                     {/* Score buttons 0-4 */}
@@ -310,20 +392,20 @@ export default function NewAssessmentPage() {
                     ← Anterior
                 </button>
 
-                {currentPillar < pillarGroups.length - 1 ? (
-                    <button
-                        onClick={() => setCurrentPillar(currentPillar + 1)}
-                        className="btn-primary"
-                    >
-                        Siguiente →
-                    </button>
-                ) : (
+                {isContextTab ? (
                     <button
                         onClick={handleSubmit}
                         disabled={answeredCount === 0}
                         className="btn-primary"
                     >
                         Calcular Resultados
+                    </button>
+                ) : (
+                    <button
+                        onClick={() => setCurrentPillar(currentPillar + 1)}
+                        className="btn-primary"
+                    >
+                        Siguiente →
                     </button>
                 )}
             </div>

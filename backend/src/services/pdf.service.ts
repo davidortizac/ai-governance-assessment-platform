@@ -411,6 +411,46 @@ function renderSignaturePage(
 }
 
 /* -------------------------------------------------------------------------- */
+/* ORGANIZATIONAL CONTEXT RENDERER                                             */
+/* -------------------------------------------------------------------------- */
+
+const CTX_LABELS: Record<string, string> = {
+    totalUsers: 'Usuarios / Empleados',
+    infoSystems: 'Sistemas de Información',
+    aiModelsUsed: 'Modelos / Herramientas de IA',
+    aiBudget: 'Presupuesto IA',
+};
+
+function renderOrgContext(
+    doc: any, FR: string, FB: string,
+    ctxData: Record<string, string> | null,
+    secLabel: (text: string, x: number, y: number) => void,
+    y: number,
+): number {
+    if (!ctxData || typeof ctxData !== 'object') return y;
+    const entries = Object.entries(ctxData)
+        .filter(([, v]) => v && String(v).trim() !== '');
+    if (entries.length === 0) return y;
+
+    secLabel('CONTEXTO ORGANIZACIONAL', MARGIN, y);
+    y += 16;
+    const innerW = CONTENT_W - 24;
+    const boxH = entries.length * 22 + 16;
+    doc.rect(MARGIN, y, CONTENT_W, boxH).fill(C.WHITE);
+    doc.rect(MARGIN, y, 3, boxH).fill(C.GOLD);
+    let row = y + 8;
+    for (const [key, val] of entries) {
+        const label = CTX_LABELS[key] ?? key;
+        doc.font(FB).fontSize(9).fillColor(C.TEXT)
+            .text(`${label}:`, MARGIN + 14, row, { lineBreak: false });
+        doc.font(FR).fontSize(9).fillColor(C.TEXT_MUTED)
+            .text(String(val), MARGIN + 200, row, { width: innerW - 200, lineBreak: false });
+        row += 22;
+    }
+    return y + boxH + 12;
+}
+
+/* -------------------------------------------------------------------------- */
 /* MAIN REPORT                                                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -523,7 +563,15 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
             y += 14;
             doc.font(FR).fontSize(11).fillColor(C.TEXT_MUTED)
                 .text(benchText, MARGIN, y, { width: CONTENT_W, align: 'justify', lineGap: 3 });
+            y += doc.heightOfString(benchText, { width: CONTENT_W, lineGap: 3 }) + 18;
         }
+
+        /* Organizational context (optional) */
+        if (y > FOOTER_Y - 100) {
+            doc.addPage(); pageBg(); addHeader('Resumen Ejecutivo (cont.)');
+            y = CONTENT_Y;
+        }
+        renderOrgContext(doc, FR, FB, (assessment as any).contextData, secLabel, y);
 
         /* ══════════════════════════════════════════════════════════════════════
            PAGE 3 — MODELO ESTRATÉGICO CSIA

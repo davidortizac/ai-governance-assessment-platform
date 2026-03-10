@@ -104,6 +104,7 @@ model Assessment {
   updatedAt     DateTime         @updatedAt
 
   llmAnalysis  Json?         // LLM-generated contextual analysis (stored for analytics)
+  contextData  Json?         // Optional organizational context (users, systems, AI models, budget)
 
   answers      Answer[]
   pillarScores PillarScore[]
@@ -128,6 +129,7 @@ model Pillar {
 model Question {
   id             String         @id @default(uuid())
   text           String
+  hint           String?
   pillarId       String
   pillar         Pillar         @relation(fields: [pillarId], references: [id])
   assessmentType AssessmentType

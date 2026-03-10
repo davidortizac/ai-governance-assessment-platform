@@ -207,6 +207,68 @@ function scoreToLabel(score: number): string {
     return 'Optimizado (liderazgo e innovación)';
 }
 
+/** Build the organizational context section from contextData if present. */
+function buildContextSection(assessment: any): string {
+    if (!assessment.contextData || typeof assessment.contextData !== 'object') return '';
+    const ctx = assessment.contextData as Record<string, string>;
+    const contextLabels: Record<string, string> = {
+        totalUsers: 'Cantidad de usuarios/empleados',
+        infoSystems: 'Sistemas de información',
+        aiModelsUsed: 'Modelos/herramientas de IA adoptados',
+        aiBudget: 'Presupuesto estimado para IA',
+    };
+    const lines = Object.entries(ctx)
+        .filter(([, v]) => v && String(v).trim() !== '')
+        .map(([k, v]) => `- **${contextLabels[k] ?? k}:** ${v}`);
+
+    return lines.length > 0 ? `\n\n## Contexto Organizacional\n${lines.join('\n')}` : '';
+}
+
+const MATURITY_LABELS: Record<number, string> = {
+    1: 'Experimental', 2: 'Emergente', 3: 'Definido', 4: 'Gestionado', 5: 'Optimizado',
+};
+
+const RISK_LABELS: Record<string, string> = {
+    CONTROLLED: 'Controlado', LOW: 'Bajo', MEDIUM: 'Medio',
+    HIGH: 'Alto', CRITICAL: 'Crítico', LATENT: 'Latente',
+};
+
+/** Format an answer's score as a human-readable label. */
+function answerScoreLabel(a: any): string {
+    if (a.notApplicable) return 'No Aplica';
+    if (a.score === 1) return 'No iniciado (1)';
+    if (a.score === 3) return 'En progreso (3)';
+    if (a.score === 5) return 'Completado (5)';
+    return `Score: ${a.score}`;
+}
+
+/** Build the pillar detail section for the LLM prompt. */
+function buildPillarSection(assessment: any): string {
+    const pillarLines: string[] = [];
+    if (!Array.isArray(assessment.pillarScores)) return '';
+
+    for (const ps of assessment.pillarScores) {
+        const pillarKey = ps.pillar?.key ?? 'unknown';
+        const pillarName = ps.pillar?.name ?? pillarKey;
+        const score = ps.score?.toFixed(2) ?? '0.00';
+        const label = scoreToLabel(ps.score ?? 0);
+
+        const pillarAnswers = (assessment.answers ?? []).filter(
+            (a: any) => a.question?.pillar?.key === pillarKey
+        );
+
+        pillarLines.push(
+            `\n### Pilar: ${pillarName} (key: ${pillarKey})`,
+            `Score: ${score}/4.0 — ${label}`,
+            ...(pillarAnswers.length > 0
+                ? ['Respuestas por pregunta:', ...pillarAnswers.map((a: any) =>
+                    `  - ${a.question?.text ?? '(sin texto)'} → ${answerScoreLabel(a)}`)]
+                : []),
+        );
+    }
+    return pillarLines.join('\n');
+}
+
 /** Build the full prompt using real assessment data. */
 function buildPrompt(assessment: any): string {
     const clientName = assessment.client?.name ?? 'la organización';
@@ -214,66 +276,9 @@ function buildPrompt(assessment: any): string {
     const overallScore = assessment.overallScore?.toFixed(2) ?? '0.00';
     const maturityLevel = assessment.maturityLevel ?? 1;
     const riskLevel = assessment.riskLevel ?? 'MEDIUM';
+    const maturityLabel = MATURITY_LABELS[maturityLevel] ?? 'Desconocido';
+    const riskLabel = RISK_LABELS[riskLevel] ?? 'Medio';
 
-    const maturityLabels: Record<number, string> = {
-        1: 'Experimental',
-        2: 'Emergente',
-        3: 'Definido',
-        4: 'Gestionado',
-        5: 'Optimizado',
-    };
-    const maturityLabel = maturityLabels[maturityLevel] ?? 'Desconocido';
-
-    const riskLabels: Record<string, string> = {
-        CONTROLLED: 'Controlado',
-        LOW: 'Bajo',
-        MEDIUM: 'Medio',
-        HIGH: 'Alto',
-        CRITICAL: 'Crítico',
-        LATENT: 'Latente',
-    };
-    const riskLabel = riskLabels[riskLevel] ?? 'Medio';
-
-    // Build pillar details
-    const pillarLines: string[] = [];
-    if (assessment.pillarScores && Array.isArray(assessment.pillarScores)) {
-        for (const ps of assessment.pillarScores) {
-            const pillarKey = ps.pillar?.key ?? 'unknown';
-            const pillarName = ps.pillar?.name ?? pillarKey;
-            const score = ps.score?.toFixed(2) ?? '0.00';
-            const label = scoreToLabel(ps.score ?? 0);
-
-            // Find answers belonging to this pillar
-            const pillarAnswers = (assessment.answers ?? []).filter(
-                (a: any) => a.question?.pillar?.key === pillarKey
-            );
-
-            pillarLines.push(`\n### Pilar: ${pillarName} (key: ${pillarKey})`);
-            pillarLines.push(`Score: ${score}/4.0 — ${label}`);
-
-            if (pillarAnswers.length > 0) {
-                pillarLines.push('Respuestas por pregunta:');
-                for (const a of pillarAnswers) {
-                    const qText = a.question?.text ?? '(sin texto)';
-                    const answerLabel = a.notApplicable
-                        ? 'No Aplica'
-                        : a.score === 1
-                            ? 'No iniciado (1)'
-                            : a.score === 3
-                                ? 'En progreso (3)'
-                                : a.score === 5
-                                    ? 'Completado (5)'
-                                    : `Score: ${a.score}`;
-                    pillarLines.push(`  - ${qText} → ${answerLabel}`);
-                }
-            }
-        }
-    }
-
-    const pillarSection = pillarLines.join('\n');
-
-    // Dynamic context appended to the static AI_ASSESSMENT_PROMPT (from config/llmPrompt.ts).
-    // To change analysis instructions or the JSON schema, edit config/llmPrompt.ts only.
     const dynamicContext =
 `## Datos del Assessment
 
@@ -284,9 +289,9 @@ function buildPrompt(assessment: any): string {
 **Nivel de Riesgo:** ${riskLabel}
 
 ## Detalle por Pilar
-${pillarSection}`;
+${buildPillarSection(assessment)}`;
 
-    return `${AI_ASSESSMENT_PROMPT}\n\n${dynamicContext}`;
+    return `${AI_ASSESSMENT_PROMPT}\n\n${dynamicContext}${buildContextSection(assessment)}`;
 }
 
 /** Call Ollama API and return structured LLMAnalysis. Throws on failure.
