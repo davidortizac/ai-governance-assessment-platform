@@ -3,6 +3,38 @@ import api from '../lib/api';
 import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 
+// ─── Model context-window lookup ──────────────────────────────────────────────
+interface ModelCtxInfo {
+    maxCtx: number;       // max context window the model supports
+    recommended: number;  // recommended num_ctx for CSIA assessment
+    tier: 'optimal' | 'good' | 'limited' | 'slow';
+    tierLabel: string;
+    ctxLabel: string;
+}
+
+function getModelCtxInfo(name: string): ModelCtxInfo {
+    const n = name.toLowerCase();
+    if (/ministral|mistral3/.test(n))           return { maxCtx: 262144, recommended: 32768, tier: 'optimal', tierLabel: 'Óptimo',    ctxLabel: '262k ctx' };
+    if (/qwen.*3.*2[78]b|qwen3.*28|qwen.*27b/.test(n)) return { maxCtx: 262144, recommended: 32768, tier: 'slow',    tierLabel: 'Muy lento', ctxLabel: '262k ctx' };
+    if (/gptoss|gpt.?oss/.test(n))              return { maxCtx: 131072, recommended: 32768, tier: 'slow',    tierLabel: 'Muy lento', ctxLabel: '131k ctx' };
+    if (/deepseek.*r1|qwen3/.test(n))           return { maxCtx: 131072, recommended: 32768, tier: 'optimal', tierLabel: 'Óptimo',    ctxLabel: '131k ctx' };
+    if (/qwen2\.5|qwen.*2\.5/.test(n))          return { maxCtx: 32768,  recommended: 16384, tier: 'good',    tierLabel: 'Bueno',     ctxLabel: '32k ctx'  };
+    if (/llama.*3(?!\.)|llama3/.test(n))        return { maxCtx: 8192,   recommended: 8192,  tier: 'limited', tierLabel: 'Limitado',  ctxLabel: '8k ctx'   };
+    if (/phi.*4|phi4/.test(n))                  return { maxCtx: 131072, recommended: 32768, tier: 'optimal', tierLabel: 'Óptimo',    ctxLabel: '131k ctx' };
+    if (/phi.*3|phi3/.test(n))                  return { maxCtx: 128000, recommended: 32768, tier: 'good',    tierLabel: 'Bueno',     ctxLabel: '128k ctx' };
+    if (/mistral|mixtral/.test(n))              return { maxCtx: 32768,  recommended: 16384, tier: 'good',    tierLabel: 'Bueno',     ctxLabel: '32k ctx'  };
+    if (/gemma/.test(n))                        return { maxCtx: 8192,   recommended: 8192,  tier: 'limited', tierLabel: 'Limitado',  ctxLabel: '8k ctx'   };
+    // unknown model — safe defaults
+    return { maxCtx: 32768, recommended: 16384, tier: 'good', tierLabel: 'Desconocido', ctxLabel: 'ctx desconocido' };
+}
+
+const TIER_STYLE: Record<string, string> = {
+    optimal: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20',
+    good:    'bg-blue-500/15    text-blue-400    border-blue-500/20',
+    limited: 'bg-amber-500/15   text-amber-400   border-amber-500/20',
+    slow:    'bg-purple-500/15  text-purple-400  border-purple-500/20',
+};
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface AssessmentRow {
     id: string;
@@ -72,6 +104,7 @@ interface LLMStatus {
     connected: boolean;
     url: string;
     currentModel: string;
+    numCtx: number;
     models: { name: string; size?: number }[];
     hasApiKey?: boolean;
     error?: string;
@@ -102,6 +135,7 @@ export default function AdminPage() {
     const [llmApiKey, setLlmApiKey]         = useState('');
     const [showApiKey, setShowApiKey]       = useState(false);
     const [configSaving, setConfigSaving]   = useState(false);
+    const [numCtx, setNumCtx]               = useState(8192);
 
     // Users state
     const [users, setUsers]             = useState<UserRow[]>([]);
@@ -197,6 +231,7 @@ export default function AdminPage() {
             const r = await api.get('/admin/llm/status');
             setLlmStatus(r.data);
             setSelectedModel(r.data.currentModel);
+            if (r.data.numCtx) setNumCtx(r.data.numCtx);
             // Sync provider form from actual backend config
             const detectedUrl: string = r.data.url ?? '';
             setLlmUrl(detectedUrl);
@@ -220,6 +255,7 @@ export default function AdminPage() {
             await api.post('/admin/llm/config', {
                 url: llmUrl,
                 ...(llmApiKey && { apiKey: llmApiKey }),
+                ...(providerType === 'ollama' && { numCtx }),
             });
             toast.success('Configuración guardada. Verificando conexión...');
             setLlmApiKey('');
@@ -506,6 +542,58 @@ export default function AdminPage() {
                                 </div>
                             )}
 
+                            {/* Context window — only for Ollama */}
+                            {providerType === 'ollama' && (
+                                <div>
+                                    <label className="text-xs text-surface-500 uppercase tracking-wider font-medium block mb-1">
+                                        Ventana de contexto (num_ctx)
+                                    </label>
+                                    <div className="flex flex-wrap gap-2 mb-2">
+                                        {[2048, 4096, 8192, 16384, 32768].map(preset => (
+                                            <button
+                                                key={preset}
+                                                type="button"
+                                                onClick={() => setNumCtx(preset)}
+                                                className={`px-3 py-1.5 rounded-lg text-xs font-mono font-medium border transition-all ${
+                                                    numCtx === preset
+                                                        ? 'bg-primary-500/15 text-primary-300 border-primary-500/30'
+                                                        : 'bg-surface-800/30 text-surface-400 border-primary-800/20 hover:bg-surface-800/60'
+                                                }`}
+                                            >
+                                                {preset >= 1024 ? `${preset / 1024}k` : preset}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <div className="flex items-center gap-3">
+                                        <input
+                                            type="range"
+                                            min={2048}
+                                            max={32768}
+                                            step={2048}
+                                            value={numCtx}
+                                            onChange={e => setNumCtx(Number(e.target.value))}
+                                            className="flex-1 accent-primary-400"
+                                        />
+                                        <input
+                                            type="number"
+                                            min={512}
+                                            max={131072}
+                                            step={512}
+                                            value={numCtx}
+                                            onChange={e => {
+                                                const v = Number(e.target.value);
+                                                if (v >= 512 && v <= 131072) setNumCtx(v);
+                                            }}
+                                            className="input-field w-24 text-sm font-mono text-center"
+                                        />
+                                    </div>
+                                    <p className="text-xs text-surface-500 mt-1">
+                                        num_predict se fija automáticamente en <span className="font-mono text-surface-400">{Math.min(Math.floor(numCtx / 2), 8192).toLocaleString()}</span> tokens.
+                                        Modelos deepseek-r1:8b soportan hasta <span className="font-mono text-surface-400">32 768</span>.
+                                    </p>
+                                </div>
+                            )}
+
                             <button
                                 onClick={saveConfig}
                                 disabled={configSaving || !llmUrl.trim()}
@@ -556,12 +644,25 @@ export default function AdminPage() {
                                         </div>
                                     )}
 
-                                    {/* Current model */}
+                                    {/* Current model + ctx */}
                                     <div>
                                         <p className="text-xs text-surface-500 uppercase tracking-wider font-medium mb-1">Modelo activo</p>
-                                        <p className="text-sm font-mono text-primary-300 bg-surface-800/50 px-3 py-2 rounded-lg border border-primary-800/20 inline-block">
-                                            {llmStatus.currentModel}
-                                        </p>
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <p className="text-sm font-mono text-primary-300 bg-surface-800/50 px-3 py-2 rounded-lg border border-primary-800/20 inline-block">
+                                                {llmStatus.currentModel}
+                                            </p>
+                                            {(() => {
+                                                const info = getModelCtxInfo(llmStatus.currentModel);
+                                                return (
+                                                    <span className={`text-xs px-2 py-1 rounded border ${TIER_STYLE[info.tier]}`}>
+                                                        {info.ctxLabel} · {info.tierLabel}
+                                                    </span>
+                                                );
+                                            })()}
+                                            <span className="text-xs text-surface-500 font-mono">
+                                                num_ctx activo: <span className="text-surface-300">{llmStatus.numCtx?.toLocaleString() ?? '8 192'}</span>
+                                            </span>
+                                        </div>
                                     </div>
                                 </>
                             ) : (
@@ -590,10 +691,12 @@ export default function AdminPage() {
                                 ) : (
                                     <>
                                         <div className="space-y-2">
-                                            {llmStatus.models.map(m => (
+                                            {llmStatus.models.map(m => {
+                                                const ctxInfo = getModelCtxInfo(m.name);
+                                                return (
                                                 <label
                                                     key={m.name}
-                                                    className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all border
+                                                    className={`flex items-start gap-3 p-3 rounded-lg cursor-pointer transition-all border
                                                         ${selectedModel === m.name
                                                             ? 'bg-primary-500/10 border-primary-500/30 text-primary-300'
                                                             : 'bg-surface-800/30 border-primary-800/20 text-surface-300 hover:bg-surface-800/60'
@@ -604,24 +707,42 @@ export default function AdminPage() {
                                                         name="model"
                                                         value={m.name}
                                                         checked={selectedModel === m.name}
-                                                        onChange={() => setSelectedModel(m.name)}
-                                                        className="accent-primary-400"
+                                                        onChange={() => {
+                                                            setSelectedModel(m.name);
+                                                            setNumCtx(ctxInfo.recommended);
+                                                        }}
+                                                        className="accent-primary-400 mt-0.5"
                                                     />
                                                     <div className="flex-1 min-w-0">
                                                         <p className="text-sm font-mono font-medium">{m.name}</p>
-                                                        {m.size && (
-                                                            <p className="text-xs text-surface-500 mt-0.5">
-                                                                {(m.size / 1e9).toFixed(1)} GB
+                                                        <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                                            {m.size && (
+                                                                <span className="text-xs text-surface-500 font-mono">
+                                                                    {(m.size / 1e9).toFixed(1)} GB
+                                                                </span>
+                                                            )}
+                                                            <span className={`text-xs px-1.5 py-0.5 rounded border font-mono ${TIER_STYLE[ctxInfo.tier]}`}>
+                                                                {ctxInfo.ctxLabel}
+                                                            </span>
+                                                            <span className={`text-xs px-1.5 py-0.5 rounded border ${TIER_STYLE[ctxInfo.tier]}`}>
+                                                                {ctxInfo.tierLabel}
+                                                            </span>
+                                                        </div>
+                                                        {selectedModel === m.name && (
+                                                            <p className="text-xs text-primary-400/70 mt-1">
+                                                                → num_ctx sugerido: <span className="font-mono font-medium">{ctxInfo.recommended.toLocaleString()}</span>
+                                                                {ctxInfo.tier === 'limited' && ' ⚠ puede truncar la salida'}
                                                             </p>
                                                         )}
                                                     </div>
                                                     {llmStatus.currentModel === m.name && (
-                                                        <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                                                        <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/20 flex-shrink-0">
                                                             activo
                                                         </span>
                                                     )}
                                                 </label>
-                                            ))}
+                                                );
+                                            })}
                                         </div>
 
                                         <button
@@ -640,9 +761,16 @@ export default function AdminPage() {
                         )}
 
                         {/* Info note */}
-                        <div className="text-xs text-surface-500 px-1 space-y-1">
+                        <div className="text-xs text-surface-500 px-1 space-y-1.5">
                             <p>• El modelo seleccionado se usa para generar análisis IA al calcular evaluaciones y al regenerar análisis desde el panel de administración.</p>
                             <p>• Los cambios de proveedor/modelo son efectivos inmediatamente y persisten mientras el servidor esté activo. Para hacerlos permanentes, actualiza <span className="font-mono text-surface-400">.env</span> y reinicia el contenedor.</p>
+                            <div className="mt-2 p-3 rounded-lg bg-surface-800/40 border border-primary-800/20 space-y-1">
+                                <p className="text-surface-400 font-medium uppercase tracking-wider text-[10px] mb-1.5">Guía de modelos para Assessment CSIA</p>
+                                <p><span className={`px-1.5 py-0.5 rounded border text-[10px] mr-1.5 ${TIER_STYLE.optimal}`}>Óptimo</span>deepseek (Qwen3 8B), ministral — buena calidad JSON, 131k-262k ctx, velocidad razonable.</p>
+                                <p><span className={`px-1.5 py-0.5 rounded border text-[10px] mr-1.5 ${TIER_STYLE.good}`}>Bueno</span>Qwen2.5 7B — el más rápido, suficiente para el assessment. Ideal si la RAM es limitada.</p>
+                                <p><span className={`px-1.5 py-0.5 rounded border text-[10px] mr-1.5 ${TIER_STYLE.limited}`}>Limitado</span>Llama3 8B — contexto de solo 8k, riesgo de truncar la salida JSON. Usar como último recurso.</p>
+                                <p><span className={`px-1.5 py-0.5 rounded border text-[10px] mr-1.5 ${TIER_STYLE.slow}`}>Muy lento</span>GPT OSS 20B, Qwen3.5 28B — mayor calidad pero requieren mucha RAM y generan lento.</p>
+                            </div>
                         </div>
                     </div>
                 )}
