@@ -14,11 +14,14 @@ import http from 'http';
 import { SYSTEM_PROMPT, AI_ASSESSMENT_PROMPT } from '../config/llmPrompt';
 
 // Read fresh from process.env on every call so runtime changes (model selection) take effect
-const getOllamaUrl = () => process.env.OLLAMA_URL ?? 'http://host.docker.internal:11434/v1/chat/completions';
-const getOllamaModel = () => process.env.OLLAMA_MODEL ?? 'deepseek-r1:8b';
-const getOllamaTimeout = () => parseInt(process.env.OLLAMA_TIMEOUT_MS ?? '300000', 10);
+const getOllamaUrl     = () => process.env.OLLAMA_URL      ?? 'http://host.docker.internal:11434/v1/chat/completions';
+const getOllamaModel   = () => process.env.OLLAMA_MODEL    ?? 'deepseek-r1:8b';
+const getOllamaTimeout = () => parseInt(process.env.OLLAMA_TIMEOUT_MS ?? '330000', 10);
+// Context window size — configurable at runtime. Default 8192 (fits enriched prompt + 4k output).
+// Ollama supports up to 32768 on models that were quantized with large ctx (e.g. deepseek-r1:8b).
+const getNumCtx        = () => parseInt(process.env.OLLAMA_NUM_CTX ?? '8192', 10);
 // Optional API key — required for Google AI Studio, leave empty for Ollama
-const getLlmApiKey = () => process.env.LLM_API_KEY ?? '';
+const getLlmApiKey     = () => process.env.LLM_API_KEY ?? '';
 
 /**
  * POST JSON to a URL using Node's native http/https.
@@ -280,7 +283,7 @@ function buildPrompt(assessment: any): string {
     const riskLabel = RISK_LABELS[riskLevel] ?? 'Medio';
 
     const dynamicContext =
-`## Datos del Assessment
+        `## Datos del Assessment
 
 **Cliente:** ${clientName}
 **Industria:** ${industry}
@@ -294,10 +297,49 @@ ${buildPillarSection(assessment)}`;
     return `${AI_ASSESSMENT_PROMPT}\n\n${dynamicContext}${buildContextSection(assessment)}`;
 }
 
+/** Process one character of a JSON string for closeTruncatedJson — returns updated state. */
+function processJsonChar(
+    c: string, opens: string[], inString: boolean, escape: boolean,
+): { inString: boolean; escape: boolean } {
+    if (escape) return { inString, escape: false };
+    if (c === '\\' && inString) return { inString, escape: true };
+    if (c === '"') return { inString: !inString, escape: false };
+    if (!inString) {
+        if (c === '{' || c === '[') opens.push(c === '{' ? '}' : ']');
+        if (c === '}' || c === ']') opens.pop();
+    }
+    return { inString, escape: false };
+}
+
+/**
+ * Attempt to close a truncated JSON object by balancing open braces/brackets.
+ * Used as last-resort recovery when finish_reason=length.
+ */
+function closeTruncatedJson(s: string): string {
+    const opens: string[] = [];
+    let inString = false;
+    let escape = false;
+
+    for (const c of s) {
+        ({ inString, escape } = processJsonChar(c, opens, inString, escape));
+    }
+
+    return s + [...opens].reverse().join('');
+}
+
+/** Detect if the LLM returned an empty/useless analysis (all fields blank). */
+function warnIfEmpty(parsed: LLMAnalysis, model: string): void {
+    const emptyPillars = Object.values(parsed.pillarAnalyses ?? {})
+        .filter(p => !p.findings && !p.gaps && !p.recommendation).length;
+    if (!parsed.executiveSummary && !parsed.awarenessMessage && emptyPillars > 0) {
+        console.warn(`[LLM] WARNING: Analysis from model "${model}" appears empty. ` +
+            'Likely causes: (1) context window overflow — try reducing prompt or increase num_ctx; ' +
+            '(2) model unable to follow JSON schema — try a larger model.');
+    }
+}
+
 /** Call Ollama API and return structured LLMAnalysis. Throws on failure.
  *  @param timeoutMs - optional override for the request timeout (defaults to OLLAMA_TIMEOUT_MS env var).
- *                     Use a short value (e.g. 45_000) for on-demand blocking calls so the PDF
- *                     still returns quickly when Ollama is unavailable or slow.
  */
 export async function generateLLMAnalysis(assessment: any, timeoutMs?: number): Promise<LLMAnalysis> {
     const prompt = buildPrompt(assessment);
@@ -305,10 +347,12 @@ export async function generateLLMAnalysis(assessment: any, timeoutMs?: number): 
     const ollamaModel = getOllamaModel();
     const ollamaTimeout = timeoutMs ?? getOllamaTimeout();
 
+    // Detect local Ollama vs cloud provider
+    const isLocalOllama = /localhost|127\.0\.0\.1|host\.docker\.internal/i.test(ollamaUrl);
+
     const requestBody = JSON.stringify({
         model: ollamaModel,
         messages: [
-            // System message loaded from config/llmPrompt.ts — edit there to change LLM behavior
             { role: 'system', content: SYSTEM_PROMPT },
             { role: 'user', content: prompt },
         ],
@@ -316,10 +360,20 @@ export async function generateLLMAnalysis(assessment: any, timeoutMs?: number): 
         top_p: 0.9,
         repeat_penalty: 1.1,
         stream: false,
-        max_tokens: 16384,  // deepseek-r1 uses tokens for <think> blocks before JSON output — 8k was too short
+        // Local 7B models can realistically produce ~4096 output tokens.
+        // Cloud models (Gemini, GPT) support much more — cap at 8192 for safety.
+        max_tokens: isLocalOllama ? Math.min(getNumCtx(), 8192) : 8192,
+        // Ollama-specific: num_ctx is configurable at runtime via OLLAMA_NUM_CTX env var.
+        // num_predict is capped at half the context window or 8192, whichever is smaller.
+        ...(isLocalOllama && {
+            options: {
+                num_ctx:     getNumCtx(),
+                num_predict: Math.min(Math.floor(getNumCtx() / 2), 8192),
+            },
+        }),
     });
 
-    console.log(`[LLM] POST ${ollamaUrl} (model=${ollamaModel}, timeout=${ollamaTimeout}ms)`);
+    console.log(`[LLM] POST ${ollamaUrl} (model=${ollamaModel}, local=${isLocalOllama}, timeout=${ollamaTimeout}ms)`);
     const { status, body: rawBody } = await httpPost(ollamaUrl, requestBody, ollamaTimeout);
 
     if (status >= 400) {
@@ -336,9 +390,9 @@ export async function generateLLMAnalysis(assessment: any, timeoutMs?: number): 
     const raw: string = data?.choices?.[0]?.message?.content ?? '';
     const finishReason: string = data?.choices?.[0]?.finish_reason ?? '';
 
-    // Warn if the response was truncated by token limit
     if (finishReason === 'length') {
-        console.warn('[LLM] WARNING: Response was truncated (finish_reason=length). Consider increasing max_tokens or using a model with less verbose reasoning.');
+        console.warn('[LLM] Response truncated (finish_reason=length) — attempting JSON close recovery. ' +
+            'If this happens often, switch to a model with larger context or increase num_ctx.');
     }
 
     // Strip <think>...</think> blocks (deepseek-r1)
@@ -348,22 +402,29 @@ export async function generateLLMAnalysis(assessment: any, timeoutMs?: number): 
     let jsonStr: string;
     try {
         jsonStr = extractJsonObject(cleaned);
-    } catch (e) {
-        throw new Error(`LLM did not return a JSON object. Raw response (first 500 chars): ${cleaned.slice(0, 500)}`);
+    } catch {
+        throw new Error(`LLM did not return a JSON object. Raw (first 500 chars): ${cleaned.slice(0, 500)}`);
     }
 
-    let parsed: LLMAnalysis;
-    try {
-        parsed = JSON.parse(jsonStr) as LLMAnalysis;
-    } catch {
-        // Attempt repair (trailing commas, etc.) before giving up
-        const repaired = repairJson(jsonStr);
+    // Attempt 1: direct parse
+    // Attempt 2: repair (trailing commas, escaped control chars)
+    // Attempt 3: close truncated JSON then repair
+    let parsed: LLMAnalysis | undefined;
+    const candidates = [jsonStr, repairJson(jsonStr), repairJson(closeTruncatedJson(jsonStr))];
+    for (const candidate of candidates) {
         try {
-            parsed = JSON.parse(repaired) as LLMAnalysis;
-            console.warn('[LLM] JSON required repair before parsing — consider switching to a model with better JSON output');
-        } catch (e2) {
-            throw new Error(`Failed to parse LLM JSON even after repair: ${(e2 as Error).message}. Snippet: ${jsonStr.slice(0, 300)}`);
+            parsed = JSON.parse(candidate) as LLMAnalysis;
+            if (candidate !== jsonStr) {
+                console.warn('[LLM] JSON required repair/close before parsing');
+            }
+            break;
+        } catch {
+            // try next candidate
         }
+    }
+
+    if (!parsed) {
+        throw new Error(`Failed to parse LLM JSON after all repair attempts. Snippet: ${jsonStr.slice(0, 300)}`);
     }
 
     // Ensure required fields exist (defensive defaults)
@@ -373,7 +434,11 @@ export async function generateLLMAnalysis(assessment: any, timeoutMs?: number): 
     parsed.awarenessMessage = parsed.awarenessMessage ?? '';
     parsed.industryBenchmark = parsed.industryBenchmark ?? '';
     parsed.improvementPlan = parsed.improvementPlan ?? { quickWins: [], longTerm: [] };
+    parsed.improvementPlan.quickWins = parsed.improvementPlan.quickWins ?? [];
+    parsed.improvementPlan.longTerm = parsed.improvementPlan.longTerm ?? [];
     parsed.pillarAnalyses = parsed.pillarAnalyses ?? {};
+
+    warnIfEmpty(parsed, ollamaModel);
 
     return parsed;
 }
