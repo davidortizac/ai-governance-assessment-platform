@@ -1,3 +1,5 @@
+> **Nota:** Este es un desarrollo personal para Gamma Ingenieros.
+
 # Informe de Pruebas de Integridad, Seguridad y Funcionalidad
 
 **Fecha:** 18 de Febrero, 2026

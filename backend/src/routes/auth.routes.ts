@@ -190,6 +190,76 @@ authRouter.get('/me', authenticate, async (req: AuthRequest, res: Response): Pro
     }
 });
 
+// PUT /api/auth/profile — Update own name and/or password
+authRouter.put('/profile', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const { name, currentPassword, newPassword } = req.body as {
+            name?: string; currentPassword?: string; newPassword?: string;
+        };
+
+        const user = await prisma.user.findUnique({ where: { id: req.user!.userId } });
+        if (!user) { res.status(404).json({ error: 'Usuario no encontrado' }); return; }
+
+        const updates: Record<string, unknown> = {};
+
+        if (name !== undefined) {
+            if (typeof name !== 'string' || name.trim().length === 0 || name.length > 255) {
+                res.status(400).json({ error: 'Nombre inválido' }); return;
+            }
+            updates.name = name.trim();
+        }
+
+        if (newPassword !== undefined) {
+            if (!currentPassword) { res.status(400).json({ error: 'Se requiere la contraseña actual' }); return; }
+            const valid = await bcrypt.compare(currentPassword, user.password);
+            if (!valid) { res.status(400).json({ error: 'Contraseña actual incorrecta' }); return; }
+            if (typeof newPassword !== 'string' || newPassword.length < 8) {
+                res.status(400).json({ error: 'La nueva contraseña debe tener al menos 8 caracteres' }); return;
+            }
+            updates.password = await bcrypt.hash(newPassword, 12);
+        }
+
+        if (Object.keys(updates).length === 0) {
+            res.status(400).json({ error: 'No hay cambios para guardar' }); return;
+        }
+
+        const updated = await prisma.user.update({
+            where: { id: req.user!.userId },
+            data: updates,
+            select: { id: true, email: true, name: true, role: true },
+        });
+
+        res.json(updated);
+    } catch (error) {
+        console.error('Update profile error:', error);
+        res.status(500).json({ error: 'Error al actualizar perfil' });
+    }
+});
+
+// DELETE /api/auth/users/:id — Admin only
+authRouter.delete('/users/:id', authenticate, requireRole('ADMIN'), async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const { id } = req.params;
+
+        if (id === req.user!.userId) {
+            res.status(400).json({ error: 'No puedes eliminar tu propia cuenta' }); return;
+        }
+
+        const target = await prisma.user.findUnique({ where: { id } });
+        if (!target) { res.status(404).json({ error: 'Usuario no encontrado' }); return; }
+
+        if (target.tenantId !== req.user!.tenantId) {
+            res.status(403).json({ error: 'Acceso denegado' }); return;
+        }
+
+        await prisma.user.delete({ where: { id } });
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Delete user error:', error);
+        res.status(500).json({ error: 'Error al eliminar usuario' });
+    }
+});
+
 // GET /api/auth/users (Admin only)
 authRouter.get('/users', authenticate, requireRole('ADMIN'), async (req: AuthRequest, res: Response): Promise<void> => {
     try {

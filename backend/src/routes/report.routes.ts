@@ -52,7 +52,14 @@ reportRouter.get('/:assessmentId/pdf', async (req: AuthRequest, res: Response): 
             select: { status: true, llmAnalysis: true },
         });
 
-        if (current?.status === 'COMPLETED' && !current?.llmAnalysis) {
+        // Also regenerate if the stored analysis has empty key fields (model returned empty strings)
+        const storedAnalysis = current?.llmAnalysis as any;
+        const hasEmptyFields = storedAnalysis &&
+            !storedAnalysis.executiveSummary &&
+            !storedAnalysis.awarenessMessage &&
+            !storedAnalysis.industryBenchmark;
+
+        if (current?.status === 'COMPLETED' && (!current?.llmAnalysis || hasEmptyFields)) {
             try {
                 console.log(`[LLM] On-demand analysis for PDF (timeout=${ON_DEMAND_TIMEOUT_MS}ms) — assessment ${assessmentId}`);
                 const full = await prisma.assessment.findUnique({
@@ -64,7 +71,7 @@ reportRouter.get('/:assessmentId/pdf', async (req: AuthRequest, res: Response): 
                     },
                 });
                 if (full) {
-                    const llmAnalysis = await generateLLMAnalysis(full, ON_DEMAND_TIMEOUT_MS);
+                    const llmAnalysis = await generateLLMAnalysis(full, ON_DEMAND_TIMEOUT_MS, { assessmentId, userId: req.user!.userId });
                     await prisma.assessment.update({
                         where: { id: assessmentId },
                         data: { llmAnalysis: llmAnalysis as any },
@@ -140,7 +147,7 @@ reportRouter.post('/:assessmentId/regenerate-analysis', async (req: AuthRequest,
 
     // Kick off background processing — do NOT await
     regeneratingIds.add(assessmentId);
-    generateLLMAnalysis(assessment)
+    generateLLMAnalysis(assessment, undefined, { assessmentId, userId: req.user!.userId })
         .then(async (llmAnalysis) => {
             await prisma.assessment.update({ where: { id: assessmentId }, data: { llmAnalysis: llmAnalysis as any } });
             console.log(`[LLM] Background regeneration complete for ${assessmentId}`);

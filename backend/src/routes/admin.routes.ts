@@ -123,12 +123,13 @@ adminRouter.get('/llm/status', async (req: AuthRequest, res: Response): Promise<
     if (!requireAdmin(req, res)) return;
     const url = process.env.OLLAMA_URL ?? 'http://host.docker.internal:11434/v1/chat/completions';
     const currentModel = process.env.OLLAMA_MODEL ?? 'deepseek-r1:8b';
+    const numCtx = Number.parseInt(process.env.OLLAMA_NUM_CTX ?? '8192', 10);
     const hasApiKey = !!(process.env.LLM_API_KEY);
     try {
         const models = await listOllamaModels();
-        res.json({ connected: true, url, currentModel, models, hasApiKey });
+        res.json({ connected: true, url, currentModel, numCtx, models, hasApiKey });
     } catch (err: any) {
-        res.json({ connected: false, url, currentModel, models: [], hasApiKey, error: err.message ?? 'Error de conexión' });
+        res.json({ connected: false, url, currentModel, numCtx, models: [], hasApiKey, error: err.message ?? 'Error de conexión' });
     }
 });
 
@@ -145,10 +146,10 @@ adminRouter.post('/llm/model', (req: AuthRequest, res: Response): void => {
     res.json({ success: true, model: process.env.OLLAMA_MODEL });
 });
 
-// POST /api/admin/llm/config — Set provider URL, API key and model at runtime (no restart needed)
+// POST /api/admin/llm/config — Set provider URL, API key, model and num_ctx at runtime (no restart needed)
 adminRouter.post('/llm/config', (req: AuthRequest, res: Response): void => {
     if (!requireAdmin(req, res)) return;
-    const { url, apiKey, model } = req.body as { url?: string; apiKey?: string; model?: string };
+    const { url, apiKey, model, numCtx } = req.body as { url?: string; apiKey?: string; model?: string; numCtx?: number };
     if (url && typeof url === 'string' && url.trim()) {
         // Validate URL format — only allow http/https
         try {
@@ -165,8 +166,11 @@ adminRouter.post('/llm/config', (req: AuthRequest, res: Response): void => {
     }
     if (apiKey !== undefined && typeof apiKey === 'string') process.env.LLM_API_KEY = apiKey.trim();
     if (model && typeof model === 'string' && model.trim()) process.env.OLLAMA_MODEL = model.trim();
-    console.log(`[Admin] LLM config updated — url: ${process.env.OLLAMA_URL}, model: ${process.env.OLLAMA_MODEL}, apiKey: ${process.env.LLM_API_KEY ? '[set]' : '[empty]'}`);
-    res.json({ success: true, url: process.env.OLLAMA_URL, model: process.env.OLLAMA_MODEL });
+    if (numCtx !== undefined && typeof numCtx === 'number' && numCtx >= 512 && numCtx <= 131072) {
+        process.env.OLLAMA_NUM_CTX = String(numCtx);
+    }
+    console.log(`[Admin] LLM config updated — url: ${process.env.OLLAMA_URL}, model: ${process.env.OLLAMA_MODEL}, num_ctx: ${process.env.OLLAMA_NUM_CTX}, apiKey: ${process.env.LLM_API_KEY ? '[set]' : '[empty]'}`);
+    res.json({ success: true, url: process.env.OLLAMA_URL, model: process.env.OLLAMA_MODEL, numCtx: Number.parseInt(process.env.OLLAMA_NUM_CTX ?? '8192', 10) });
 });
 
 // GET /api/admin/users — List all users for the tenant
@@ -428,6 +432,75 @@ adminRouter.get('/db/stats', async (req: AuthRequest, res: Response): Promise<vo
     } catch (error) {
         console.error('Admin DB stats error:', error);
         res.status(500).json({ error: 'Error al obtener estadísticas' });
+    }
+});
+
+// GET /api/admin/token-usage — Token consumption history with aggregates
+adminRouter.get('/token-usage', async (req: AuthRequest, res: Response): Promise<void> => {
+    if (!requireAdmin(req, res)) return;
+    try {
+        const limit = Math.min(parseInt(String(req.query.limit ?? '100'), 10), 500);
+
+        // Recent entries (most recent first)
+        const recent = await prisma.tokenUsage.findMany({
+            orderBy: { createdAt: 'desc' },
+            take: limit,
+        });
+
+        // Aggregate by model
+        const byModel = await prisma.tokenUsage.groupBy({
+            by: ['model', 'provider'],
+            _sum: { promptTokens: true, completionTokens: true, totalTokens: true },
+            _count: { id: true },
+            orderBy: { _sum: { totalTokens: 'desc' } },
+        });
+
+        // Overall totals
+        const totals = await prisma.tokenUsage.aggregate({
+            _sum: { promptTokens: true, completionTokens: true, totalTokens: true },
+            _count: { id: true },
+        });
+
+        // Per-day usage (last 30 days)
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+        const dailyRaw = await prisma.tokenUsage.findMany({
+            where: { createdAt: { gte: thirtyDaysAgo } },
+            select: { createdAt: true, totalTokens: true, model: true },
+            orderBy: { createdAt: 'asc' },
+        });
+
+        // Aggregate daily in JS
+        const dailyMap = new Map<string, { date: string; totalTokens: number; calls: number }>();
+        for (const row of dailyRaw) {
+            const day = row.createdAt.toISOString().slice(0, 10);
+            const existing = dailyMap.get(day) ?? { date: day, totalTokens: 0, calls: 0 };
+            existing.totalTokens += row.totalTokens;
+            existing.calls += 1;
+            dailyMap.set(day, existing);
+        }
+        const daily = Array.from(dailyMap.values());
+
+        res.json({
+            totals: {
+                calls: totals._count.id,
+                promptTokens: totals._sum.promptTokens ?? 0,
+                completionTokens: totals._sum.completionTokens ?? 0,
+                totalTokens: totals._sum.totalTokens ?? 0,
+            },
+            byModel: byModel.map(m => ({
+                model: m.model,
+                provider: m.provider,
+                calls: m._count.id,
+                promptTokens: m._sum.promptTokens ?? 0,
+                completionTokens: m._sum.completionTokens ?? 0,
+                totalTokens: m._sum.totalTokens ?? 0,
+            })),
+            daily,
+            recent,
+        });
+    } catch (error) {
+        console.error('Admin token-usage error:', error);
+        res.status(500).json({ error: 'Error al obtener historial de tokens' });
     }
 });
 

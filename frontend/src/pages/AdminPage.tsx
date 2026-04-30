@@ -3,6 +3,48 @@ import api from '../lib/api';
 import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 
+// ─── Model context-window lookup ──────────────────────────────────────────────
+interface ModelCtxInfo {
+    maxCtx: number;       // max context window the model supports
+    recommended: number;  // recommended num_ctx for CSIA assessment
+    tier: 'optimal' | 'good' | 'limited' | 'slow';
+    tierLabel: string;
+    ctxLabel: string;
+}
+
+function getModelCtxInfo(name: string): ModelCtxInfo {
+    const n = name.toLowerCase();
+    // ── Google AI Studio (Gemini) models — cloud, no num_ctx needed ──────────
+    if (/gemini.*2\.5.*pro|gemini-2\.5-pro/.test(n))    return { maxCtx: 1048576,  recommended: 32768, tier: 'optimal', tierLabel: 'Óptimo',    ctxLabel: '1M ctx'   };
+    if (/gemini.*2\.5.*flash|gemini-2\.5-flash/.test(n)) return { maxCtx: 1048576,  recommended: 32768, tier: 'optimal', tierLabel: 'Óptimo',    ctxLabel: '1M ctx'   };
+    if (/gemini.*2\.0.*flash|gemini-2\.0-flash/.test(n)) return { maxCtx: 1048576,  recommended: 32768, tier: 'optimal', tierLabel: 'Óptimo',    ctxLabel: '1M ctx'   };
+    if (/gemini.*1\.5.*pro|gemini-1\.5-pro/.test(n))     return { maxCtx: 2097152,  recommended: 32768, tier: 'optimal', tierLabel: 'Óptimo',    ctxLabel: '2M ctx'   };
+    if (/gemini.*1\.5.*flash|gemini-1\.5-flash/.test(n)) return { maxCtx: 1048576,  recommended: 32768, tier: 'optimal', tierLabel: 'Óptimo',    ctxLabel: '1M ctx'   };
+    if (/gemini.*flash/.test(n))                          return { maxCtx: 1048576,  recommended: 32768, tier: 'optimal', tierLabel: 'Óptimo',    ctxLabel: '1M ctx'   };
+    if (/gemini.*pro/.test(n))                            return { maxCtx: 2097152,  recommended: 32768, tier: 'optimal', tierLabel: 'Óptimo',    ctxLabel: '2M ctx'   };
+    if (/gemini/.test(n))                                 return { maxCtx: 1048576,  recommended: 32768, tier: 'optimal', tierLabel: 'Óptimo',    ctxLabel: '1M ctx'   };
+    // ── Local Ollama models ───────────────────────────────────────────────────
+    if (/ministral|mistral3/.test(n))           return { maxCtx: 262144, recommended: 32768, tier: 'optimal', tierLabel: 'Óptimo',    ctxLabel: '262k ctx' };
+    if (/qwen.*3.*2[78]b|qwen3.*28|qwen.*27b/.test(n)) return { maxCtx: 262144, recommended: 32768, tier: 'slow',    tierLabel: 'Muy lento', ctxLabel: '262k ctx' };
+    if (/gptoss|gpt.?oss/.test(n))              return { maxCtx: 131072, recommended: 32768, tier: 'slow',    tierLabel: 'Muy lento', ctxLabel: '131k ctx' };
+    if (/deepseek.*r1|qwen3/.test(n))           return { maxCtx: 131072, recommended: 32768, tier: 'optimal', tierLabel: 'Óptimo',    ctxLabel: '131k ctx' };
+    if (/qwen2\.5|qwen.*2\.5/.test(n))          return { maxCtx: 32768,  recommended: 16384, tier: 'good',    tierLabel: 'Bueno',     ctxLabel: '32k ctx'  };
+    if (/llama.*3(?!\.)|llama3/.test(n))        return { maxCtx: 8192,   recommended: 8192,  tier: 'limited', tierLabel: 'Limitado',  ctxLabel: '8k ctx'   };
+    if (/phi.*4|phi4/.test(n))                  return { maxCtx: 131072, recommended: 32768, tier: 'optimal', tierLabel: 'Óptimo',    ctxLabel: '131k ctx' };
+    if (/phi.*3|phi3/.test(n))                  return { maxCtx: 128000, recommended: 32768, tier: 'good',    tierLabel: 'Bueno',     ctxLabel: '128k ctx' };
+    if (/mistral|mixtral/.test(n))              return { maxCtx: 32768,  recommended: 16384, tier: 'good',    tierLabel: 'Bueno',     ctxLabel: '32k ctx'  };
+    if (/gemma/.test(n))                        return { maxCtx: 8192,   recommended: 8192,  tier: 'limited', tierLabel: 'Limitado',  ctxLabel: '8k ctx'   };
+    // unknown model — safe defaults
+    return { maxCtx: 32768, recommended: 16384, tier: 'good', tierLabel: 'Desconocido', ctxLabel: 'ctx desconocido' };
+}
+
+const TIER_STYLE: Record<string, string> = {
+    optimal: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20',
+    good:    'bg-blue-500/15    text-blue-400    border-blue-500/20',
+    limited: 'bg-amber-500/15   text-amber-400   border-amber-500/20',
+    slow:    'bg-purple-500/15  text-purple-400  border-purple-500/20',
+};
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface AssessmentRow {
     id: string;
@@ -67,11 +109,18 @@ interface DbStats {
     users: number; clients: number; assessments: number; answers: number; pillars: number; questions: number;
 }
 
+interface TokenTotals { calls: number; promptTokens: number; completionTokens: number; totalTokens: number; }
+interface TokenByModel { model: string; provider: string; calls: number; promptTokens: number; completionTokens: number; totalTokens: number; }
+interface TokenDaily { date: string; totalTokens: number; calls: number; }
+interface TokenEntry { id: string; assessmentId: string | null; userId: string | null; model: string; provider: string; promptTokens: number; completionTokens: number; totalTokens: number; createdAt: string; }
+interface TokenUsageData { totals: TokenTotals; byModel: TokenByModel[]; daily: TokenDaily[]; recent: TokenEntry[]; }
+
 // ─── LLM status type ──────────────────────────────────────────────────────────
 interface LLMStatus {
     connected: boolean;
     url: string;
     currentModel: string;
+    numCtx: number;
     models: { name: string; size?: number }[];
     hasApiKey?: boolean;
     error?: string;
@@ -80,7 +129,7 @@ interface LLMStatus {
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function AdminPage() {
     const navigate = useNavigate();
-    const [mainView, setMainView]   = useState<'assessments' | 'llm-config' | 'users' | 'db'>('assessments');
+    const [mainView, setMainView]   = useState<'assessments' | 'llm-config' | 'users' | 'db' | 'tokens'>('assessments');
     const [rows, setRows]           = useState<AssessmentRow[]>([]);
     const [loading, setLoading]     = useState(true);
     const [detail, setDetail]       = useState<AssessmentDetail | null>(null);
@@ -102,6 +151,7 @@ export default function AdminPage() {
     const [llmApiKey, setLlmApiKey]         = useState('');
     const [showApiKey, setShowApiKey]       = useState(false);
     const [configSaving, setConfigSaving]   = useState(false);
+    const [numCtx, setNumCtx]               = useState(8192);
 
     // Users state
     const [users, setUsers]             = useState<UserRow[]>([]);
@@ -114,6 +164,10 @@ export default function AdminPage() {
     const [exporting, setExporting]     = useState(false);
     const [restoring, setRestoring]     = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+
+    // Token usage state
+    const [tokenData, setTokenData]     = useState<TokenUsageData | null>(null);
+    const [tokenLoading, setTokenLoading] = useState(false);
 
     // Context menu state for row actions
     const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; row: AssessmentRow } | null>(null);
@@ -197,6 +251,7 @@ export default function AdminPage() {
             const r = await api.get('/admin/llm/status');
             setLlmStatus(r.data);
             setSelectedModel(r.data.currentModel);
+            if (r.data.numCtx) setNumCtx(r.data.numCtx);
             // Sync provider form from actual backend config
             const detectedUrl: string = r.data.url ?? '';
             setLlmUrl(detectedUrl);
@@ -220,6 +275,7 @@ export default function AdminPage() {
             await api.post('/admin/llm/config', {
                 url: llmUrl,
                 ...(llmApiKey && { apiKey: llmApiKey }),
+                ...(providerType === 'ollama' && { numCtx }),
             });
             toast.success('Configuración guardada. Verificando conexión...');
             setLlmApiKey('');
@@ -318,6 +374,14 @@ export default function AdminPage() {
             .finally(() => setDbLoading(false));
     }, []);
 
+    const loadTokenUsage = useCallback(() => {
+        setTokenLoading(true);
+        api.get('/admin/token-usage')
+            .then(r => setTokenData(r.data))
+            .catch(() => toast.error('Error cargando historial de tokens'))
+            .finally(() => setTokenLoading(false));
+    }, []);
+
     const handleDbExport = async () => {
         setExporting(true);
         try {
@@ -411,6 +475,7 @@ export default function AdminPage() {
                         { key: 'assessments', label: 'Evaluaciones', icon: '📋', onMount: () => {} },
                         { key: 'users',       label: 'Usuarios',     icon: '👥', onMount: () => { if (users.length === 0) loadUsers(); } },
                         { key: 'llm-config',  label: 'Config IA',    icon: '🤖', onMount: () => { if (!llmStatus) testLLMConnection(); } },
+                        { key: 'tokens',      label: 'Tokens',       icon: '🔢', onMount: () => { if (!tokenData) loadTokenUsage(); } },
                         { key: 'db',          label: 'Base de Datos', icon: '🗄️', onMount: () => { if (!dbStats) loadDbStats(); } },
                     ] as const).map(v => (
                         <button
@@ -506,6 +571,58 @@ export default function AdminPage() {
                                 </div>
                             )}
 
+                            {/* Context window — only for Ollama */}
+                            {providerType === 'ollama' && (
+                                <div>
+                                    <label className="text-xs text-surface-500 uppercase tracking-wider font-medium block mb-1">
+                                        Ventana de contexto (num_ctx)
+                                    </label>
+                                    <div className="flex flex-wrap gap-2 mb-2">
+                                        {[2048, 4096, 8192, 16384, 32768].map(preset => (
+                                            <button
+                                                key={preset}
+                                                type="button"
+                                                onClick={() => setNumCtx(preset)}
+                                                className={`px-3 py-1.5 rounded-lg text-xs font-mono font-medium border transition-all ${
+                                                    numCtx === preset
+                                                        ? 'bg-primary-500/15 text-primary-300 border-primary-500/30'
+                                                        : 'bg-surface-800/30 text-surface-400 border-primary-800/20 hover:bg-surface-800/60'
+                                                }`}
+                                            >
+                                                {preset >= 1024 ? `${preset / 1024}k` : preset}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <div className="flex items-center gap-3">
+                                        <input
+                                            type="range"
+                                            min={2048}
+                                            max={32768}
+                                            step={2048}
+                                            value={numCtx}
+                                            onChange={e => setNumCtx(Number(e.target.value))}
+                                            className="flex-1 accent-primary-400"
+                                        />
+                                        <input
+                                            type="number"
+                                            min={512}
+                                            max={131072}
+                                            step={512}
+                                            value={numCtx}
+                                            onChange={e => {
+                                                const v = Number(e.target.value);
+                                                if (v >= 512 && v <= 131072) setNumCtx(v);
+                                            }}
+                                            className="input-field w-24 text-sm font-mono text-center"
+                                        />
+                                    </div>
+                                    <p className="text-xs text-surface-500 mt-1">
+                                        num_predict se fija automáticamente en <span className="font-mono text-surface-400">{Math.min(Math.floor(numCtx / 2), 8192).toLocaleString()}</span> tokens.
+                                        Modelos deepseek-r1:8b soportan hasta <span className="font-mono text-surface-400">32 768</span>.
+                                    </p>
+                                </div>
+                            )}
+
                             <button
                                 onClick={saveConfig}
                                 disabled={configSaving || !llmUrl.trim()}
@@ -556,12 +673,25 @@ export default function AdminPage() {
                                         </div>
                                     )}
 
-                                    {/* Current model */}
+                                    {/* Current model + ctx */}
                                     <div>
                                         <p className="text-xs text-surface-500 uppercase tracking-wider font-medium mb-1">Modelo activo</p>
-                                        <p className="text-sm font-mono text-primary-300 bg-surface-800/50 px-3 py-2 rounded-lg border border-primary-800/20 inline-block">
-                                            {llmStatus.currentModel}
-                                        </p>
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <p className="text-sm font-mono text-primary-300 bg-surface-800/50 px-3 py-2 rounded-lg border border-primary-800/20 inline-block">
+                                                {llmStatus.currentModel}
+                                            </p>
+                                            {(() => {
+                                                const info = getModelCtxInfo(llmStatus.currentModel);
+                                                return (
+                                                    <span className={`text-xs px-2 py-1 rounded border ${TIER_STYLE[info.tier]}`}>
+                                                        {info.ctxLabel} · {info.tierLabel}
+                                                    </span>
+                                                );
+                                            })()}
+                                            <span className="text-xs text-surface-500 font-mono">
+                                                num_ctx activo: <span className="text-surface-300">{llmStatus.numCtx?.toLocaleString() ?? '8 192'}</span>
+                                            </span>
+                                        </div>
                                     </div>
                                 </>
                             ) : (
@@ -590,10 +720,12 @@ export default function AdminPage() {
                                 ) : (
                                     <>
                                         <div className="space-y-2">
-                                            {llmStatus.models.map(m => (
+                                            {llmStatus.models.map(m => {
+                                                const ctxInfo = getModelCtxInfo(m.name);
+                                                return (
                                                 <label
                                                     key={m.name}
-                                                    className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all border
+                                                    className={`flex items-start gap-3 p-3 rounded-lg cursor-pointer transition-all border
                                                         ${selectedModel === m.name
                                                             ? 'bg-primary-500/10 border-primary-500/30 text-primary-300'
                                                             : 'bg-surface-800/30 border-primary-800/20 text-surface-300 hover:bg-surface-800/60'
@@ -604,24 +736,42 @@ export default function AdminPage() {
                                                         name="model"
                                                         value={m.name}
                                                         checked={selectedModel === m.name}
-                                                        onChange={() => setSelectedModel(m.name)}
-                                                        className="accent-primary-400"
+                                                        onChange={() => {
+                                                            setSelectedModel(m.name);
+                                                            setNumCtx(ctxInfo.recommended);
+                                                        }}
+                                                        className="accent-primary-400 mt-0.5"
                                                     />
                                                     <div className="flex-1 min-w-0">
                                                         <p className="text-sm font-mono font-medium">{m.name}</p>
-                                                        {m.size && (
-                                                            <p className="text-xs text-surface-500 mt-0.5">
-                                                                {(m.size / 1e9).toFixed(1)} GB
+                                                        <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                                            {m.size && (
+                                                                <span className="text-xs text-surface-500 font-mono">
+                                                                    {(m.size / 1e9).toFixed(1)} GB
+                                                                </span>
+                                                            )}
+                                                            <span className={`text-xs px-1.5 py-0.5 rounded border font-mono ${TIER_STYLE[ctxInfo.tier]}`}>
+                                                                {ctxInfo.ctxLabel}
+                                                            </span>
+                                                            <span className={`text-xs px-1.5 py-0.5 rounded border ${TIER_STYLE[ctxInfo.tier]}`}>
+                                                                {ctxInfo.tierLabel}
+                                                            </span>
+                                                        </div>
+                                                        {selectedModel === m.name && (
+                                                            <p className="text-xs text-primary-400/70 mt-1">
+                                                                → num_ctx sugerido: <span className="font-mono font-medium">{ctxInfo.recommended.toLocaleString()}</span>
+                                                                {ctxInfo.tier === 'limited' && ' ⚠ puede truncar la salida'}
                                                             </p>
                                                         )}
                                                     </div>
                                                     {llmStatus.currentModel === m.name && (
-                                                        <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                                                        <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/20 flex-shrink-0">
                                                             activo
                                                         </span>
                                                     )}
                                                 </label>
-                                            ))}
+                                                );
+                                            })}
                                         </div>
 
                                         <button
@@ -640,11 +790,27 @@ export default function AdminPage() {
                         )}
 
                         {/* Info note */}
-                        <div className="text-xs text-surface-500 px-1 space-y-1">
+                        <div className="text-xs text-surface-500 px-1 space-y-1.5">
                             <p>• El modelo seleccionado se usa para generar análisis IA al calcular evaluaciones y al regenerar análisis desde el panel de administración.</p>
                             <p>• Los cambios de proveedor/modelo son efectivos inmediatamente y persisten mientras el servidor esté activo. Para hacerlos permanentes, actualiza <span className="font-mono text-surface-400">.env</span> y reinicia el contenedor.</p>
+                            <div className="mt-2 p-3 rounded-lg bg-surface-800/40 border border-primary-800/20 space-y-1">
+                                <p className="text-surface-400 font-medium uppercase tracking-wider text-[10px] mb-1.5">Guía de modelos para Assessment CSIA</p>
+                                <p><span className={`px-1.5 py-0.5 rounded border text-[10px] mr-1.5 ${TIER_STYLE.optimal}`}>Óptimo</span>deepseek (Qwen3 8B), ministral — buena calidad JSON, 131k-262k ctx, velocidad razonable.</p>
+                                <p><span className={`px-1.5 py-0.5 rounded border text-[10px] mr-1.5 ${TIER_STYLE.good}`}>Bueno</span>Qwen2.5 7B — el más rápido, suficiente para el assessment. Ideal si la RAM es limitada.</p>
+                                <p><span className={`px-1.5 py-0.5 rounded border text-[10px] mr-1.5 ${TIER_STYLE.limited}`}>Limitado</span>Llama3 8B — contexto de solo 8k, riesgo de truncar la salida JSON. Usar como último recurso.</p>
+                                <p><span className={`px-1.5 py-0.5 rounded border text-[10px] mr-1.5 ${TIER_STYLE.slow}`}>Muy lento</span>GPT OSS 20B, Qwen3.5 28B — mayor calidad pero requieren mucha RAM y generan lento.</p>
+                            </div>
                         </div>
                     </div>
+                )}
+
+                {/* ── Token Usage view ─────────────────────────────────────── */}
+                {mainView === 'tokens' && (
+                    <TokenUsageView
+                        data={tokenData}
+                        loading={tokenLoading}
+                        onRefresh={loadTokenUsage}
+                    />
                 )}
 
                 {/* ── Assessments view ─────────────────────────────────────── */}
@@ -1261,6 +1427,158 @@ function StatCard({ label, value, icon }: Readonly<{ label: string; value: numbe
     );
 }
 
+function TokenUsageView({ data, loading, onRefresh }: Readonly<{
+    data: TokenUsageData | null; loading: boolean; onRefresh: () => void;
+}>) {
+    const fmtNum = (n: number) => n.toLocaleString('es-CO');
+
+    return (
+        <div className="space-y-5 max-w-4xl">
+            {/* Header */}
+            <div className="flex items-center justify-between">
+                <div>
+                    <h2 className="text-lg font-semibold text-surface-100">Consumo de Tokens</h2>
+                    <p className="text-xs text-surface-500 mt-0.5">Historial de uso por consulta, modelo y fecha</p>
+                </div>
+                <button onClick={onRefresh} disabled={loading} className="btn-secondary text-sm flex items-center gap-2">
+                    {loading ? <span className="animate-spin inline-block">↺</span> : '↺'} Actualizar
+                </button>
+            </div>
+
+            {loading && !data ? (
+                <div className="flex items-center justify-center py-16">
+                    <div className="animate-spin w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full" />
+                </div>
+            ) : !data ? (
+                <div className="text-center py-12 text-surface-500 text-sm">Haz clic en "Actualizar" para cargar el historial</div>
+            ) : (
+                <>
+                    {/* Overall totals */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        {[
+                            { label: 'Consultas IA', value: fmtNum(data.totals.calls), icon: '🔢' },
+                            { label: 'Tokens entrada', value: fmtNum(data.totals.promptTokens), icon: '📥' },
+                            { label: 'Tokens salida', value: fmtNum(data.totals.completionTokens), icon: '📤' },
+                            { label: 'Total tokens', value: fmtNum(data.totals.totalTokens), icon: '💠' },
+                        ].map(c => (
+                            <div key={c.label} className="glass-card p-4 text-center">
+                                <p className="text-2xl mb-1">{c.icon}</p>
+                                <p className="text-xl font-bold text-primary-400 font-mono">{c.value}</p>
+                                <p className="text-xs text-surface-500 mt-0.5">{c.label}</p>
+                            </div>
+                        ))}
+                    </div>
+
+                    {/* By model */}
+                    {data.byModel.length > 0 && (
+                        <div className="glass-card p-5 space-y-3">
+                            <h3 className="text-sm font-semibold text-surface-200 flex items-center gap-2">
+                                <span>🧠</span> Consumo por modelo
+                            </h3>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-sm">
+                                    <thead>
+                                        <tr className="border-b border-primary-800/20">
+                                            {['Modelo', 'Proveedor', 'Consultas', 'Tokens entrada', 'Tokens salida', 'Total'].map(h => (
+                                                <th key={h} className="text-left px-3 py-2 text-xs font-semibold text-surface-400 uppercase tracking-wider whitespace-nowrap">{h}</th>
+                                            ))}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {data.byModel.map((m, i) => (
+                                            <tr key={i} className="border-b border-primary-800/10 hover:bg-primary-500/5">
+                                                <td className="px-3 py-2 font-mono text-primary-300 text-xs whitespace-nowrap">{m.model}</td>
+                                                <td className="px-3 py-2">
+                                                    <span className={`text-xs px-2 py-0.5 rounded-full border ${m.provider === 'google' ? 'text-blue-400 bg-blue-500/10 border-blue-500/20' : 'text-purple-400 bg-purple-500/10 border-purple-500/20'}`}>
+                                                        {m.provider === 'google' ? '☁ Google' : '🖥 Ollama'}
+                                                    </span>
+                                                </td>
+                                                <td className="px-3 py-2 text-surface-300 font-mono text-right">{fmtNum(m.calls)}</td>
+                                                <td className="px-3 py-2 text-surface-400 font-mono text-right">{fmtNum(m.promptTokens)}</td>
+                                                <td className="px-3 py-2 text-surface-400 font-mono text-right">{fmtNum(m.completionTokens)}</td>
+                                                <td className="px-3 py-2 text-primary-300 font-mono font-semibold text-right">{fmtNum(m.totalTokens)}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Daily usage (last 30 days) */}
+                    {data.daily.length > 0 && (
+                        <div className="glass-card p-5 space-y-3">
+                            <h3 className="text-sm font-semibold text-surface-200 flex items-center gap-2">
+                                <span>📅</span> Uso diario (últimos 30 días)
+                            </h3>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-sm">
+                                    <thead>
+                                        <tr className="border-b border-primary-800/20">
+                                            {['Fecha', 'Consultas', 'Total tokens'].map(h => (
+                                                <th key={h} className="text-left px-3 py-2 text-xs font-semibold text-surface-400 uppercase tracking-wider">{h}</th>
+                                            ))}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {[...data.daily].reverse().map((d, i) => (
+                                            <tr key={i} className="border-b border-primary-800/10 hover:bg-primary-500/5">
+                                                <td className="px-3 py-2 text-surface-300 font-mono text-xs">{d.date}</td>
+                                                <td className="px-3 py-2 text-surface-400 font-mono">{fmtNum(d.calls)}</td>
+                                                <td className="px-3 py-2 text-primary-300 font-mono">{fmtNum(d.totalTokens)}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Recent entries */}
+                    {data.recent.length > 0 && (
+                        <div className="glass-card p-5 space-y-3">
+                            <h3 className="text-sm font-semibold text-surface-200 flex items-center gap-2">
+                                <span>🕐</span> Últimas consultas
+                            </h3>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-sm">
+                                    <thead>
+                                        <tr className="border-b border-primary-800/20">
+                                            {['Fecha', 'Modelo', 'Assessment', 'Entrada', 'Salida', 'Total'].map(h => (
+                                                <th key={h} className="text-left px-3 py-2 text-xs font-semibold text-surface-400 uppercase tracking-wider whitespace-nowrap">{h}</th>
+                                            ))}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {data.recent.map(r => (
+                                            <tr key={r.id} className="border-b border-primary-800/10 hover:bg-primary-500/5">
+                                                <td className="px-3 py-2 text-surface-500 text-xs whitespace-nowrap">{new Date(r.createdAt).toLocaleString('es-CO')}</td>
+                                                <td className="px-3 py-2 font-mono text-primary-300 text-xs whitespace-nowrap max-w-32 truncate">{r.model}</td>
+                                                <td className="px-3 py-2 text-surface-500 text-xs font-mono">{r.assessmentId ? r.assessmentId.slice(0, 8) + '…' : '—'}</td>
+                                                <td className="px-3 py-2 text-surface-400 font-mono text-right">{fmtNum(r.promptTokens)}</td>
+                                                <td className="px-3 py-2 text-surface-400 font-mono text-right">{fmtNum(r.completionTokens)}</td>
+                                                <td className="px-3 py-2 text-primary-300 font-mono font-semibold text-right">{fmtNum(r.totalTokens)}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
+
+                    {data.totals.calls === 0 && (
+                        <div className="text-center py-8 text-surface-500 text-sm glass-card p-6">
+                            <p className="text-3xl mb-2">📊</p>
+                            <p>No hay registros de consumo de tokens aún.</p>
+                            <p className="text-xs mt-1">Los tokens se registran automáticamente al generar o regenerar análisis IA.</p>
+                        </div>
+                    )}
+                </>
+            )}
+        </div>
+    );
+}
+
 function DbView({ stats, loading, exporting, restoring, fileInputRef, onRefresh, onExport, onRestore }: Readonly<{
     stats: DbStats | null; loading: boolean; exporting: boolean; restoring: boolean;
     fileInputRef: React.RefObject<HTMLInputElement>;
@@ -1298,10 +1616,10 @@ function DbView({ stats, loading, exporting, restoring, fileInputRef, onRefresh,
             {/* Export */}
             <div className="glass-card p-5 space-y-4">
                 <h2 className="text-base font-semibold text-surface-100 flex items-center gap-2">
-                    <span>💾</span> Copia de Seguridad
+                    <span>💾</span> Exportar / Respaldar Base de Datos
                 </h2>
                 <p className="text-xs text-surface-500">
-                    Exporta todos los datos de la aplicación en formato JSON. Este archivo puede ser restaurado en otra instancia de la aplicación.
+                    Exporta todos los datos en formato JSON. Usa este archivo para hacer backup o para migrar datos desde una instancia local hacia el repositorio global centralizado.
                 </p>
                 <button
                     onClick={onExport}
@@ -1315,14 +1633,26 @@ function DbView({ stats, loading, exporting, restoring, fileInputRef, onRefresh,
                 </button>
             </div>
 
-            {/* Restore */}
+            {/* Merge / Restore */}
             <div className="glass-card p-5 space-y-4">
                 <h2 className="text-base font-semibold text-surface-100 flex items-center gap-2">
-                    <span>🔄</span> Restaurar Datos
+                    <span>🔀</span> Importar y Unificar Bases de Datos
                 </h2>
                 <p className="text-xs text-surface-500">
-                    Importa datos desde un archivo de backup JSON. Los registros existentes no se duplican.
+                    Importa el backup JSON de <span className="text-surface-300 font-medium">otra instancia local</span> de la aplicación para unificarlo con esta base de datos centralizada.
+                    Los registros que ya existen se omiten; solo se insertan los nuevos. Ejecuta este proceso una vez por cada equipo local que quieras consolidar.
                 </p>
+
+                <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-xs text-blue-300 space-y-1">
+                    <p className="font-semibold">Cómo migrar varias instancias locales al repositorio global:</p>
+                    <ol className="list-decimal list-inside space-y-0.5 text-blue-200">
+                        <li>En cada equipo local, abre la instancia de la app → Panel Admin → Base de Datos → <strong>Exportar</strong>.</li>
+                        <li>Descarga el archivo <span className="font-mono">gamma_backup_YYYY-MM-DD.json</span>.</li>
+                        <li>Aquí en la instancia central, haz clic en <strong>Seleccionar archivo de backup</strong> y elige ese JSON.</li>
+                        <li>Repite el paso 1-3 por cada equipo local.</li>
+                    </ol>
+                </div>
+
                 <div className="flex items-center gap-3">
                     <input
                         ref={fileInputRef}
@@ -1340,13 +1670,13 @@ function DbView({ stats, loading, exporting, restoring, fileInputRef, onRefresh,
                         className="btn-secondary text-sm flex items-center gap-2"
                     >
                         {restoring
-                            ? <><span className="animate-spin inline-block">↺</span> Restaurando...</>
-                            : <><span>⬆</span> Seleccionar archivo de backup</>
+                            ? <><span className="animate-spin inline-block">↺</span> Importando y unificando...</>
+                            : <><span>⬆</span> Seleccionar archivo de backup para importar</>
                         }
                     </button>
                 </div>
                 <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300">
-                    <span className="font-medium">Nota:</span> La restauración agrega datos que no existen. No modifica ni elimina registros existentes.
+                    <span className="font-medium">Seguro de ejecutar múltiples veces:</span> solo se insertan registros nuevos. No se modifican ni eliminan los existentes, por lo que puedes importar el mismo backup más de una vez sin generar duplicados.
                 </div>
             </div>
         </div>
