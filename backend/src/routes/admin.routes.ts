@@ -435,6 +435,75 @@ adminRouter.get('/db/stats', async (req: AuthRequest, res: Response): Promise<vo
     }
 });
 
+// GET /api/admin/token-usage — Token consumption history with aggregates
+adminRouter.get('/token-usage', async (req: AuthRequest, res: Response): Promise<void> => {
+    if (!requireAdmin(req, res)) return;
+    try {
+        const limit = Math.min(parseInt(String(req.query.limit ?? '100'), 10), 500);
+
+        // Recent entries (most recent first)
+        const recent = await prisma.tokenUsage.findMany({
+            orderBy: { createdAt: 'desc' },
+            take: limit,
+        });
+
+        // Aggregate by model
+        const byModel = await prisma.tokenUsage.groupBy({
+            by: ['model', 'provider'],
+            _sum: { promptTokens: true, completionTokens: true, totalTokens: true },
+            _count: { id: true },
+            orderBy: { _sum: { totalTokens: 'desc' } },
+        });
+
+        // Overall totals
+        const totals = await prisma.tokenUsage.aggregate({
+            _sum: { promptTokens: true, completionTokens: true, totalTokens: true },
+            _count: { id: true },
+        });
+
+        // Per-day usage (last 30 days)
+        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+        const dailyRaw = await prisma.tokenUsage.findMany({
+            where: { createdAt: { gte: thirtyDaysAgo } },
+            select: { createdAt: true, totalTokens: true, model: true },
+            orderBy: { createdAt: 'asc' },
+        });
+
+        // Aggregate daily in JS
+        const dailyMap = new Map<string, { date: string; totalTokens: number; calls: number }>();
+        for (const row of dailyRaw) {
+            const day = row.createdAt.toISOString().slice(0, 10);
+            const existing = dailyMap.get(day) ?? { date: day, totalTokens: 0, calls: 0 };
+            existing.totalTokens += row.totalTokens;
+            existing.calls += 1;
+            dailyMap.set(day, existing);
+        }
+        const daily = Array.from(dailyMap.values());
+
+        res.json({
+            totals: {
+                calls: totals._count.id,
+                promptTokens: totals._sum.promptTokens ?? 0,
+                completionTokens: totals._sum.completionTokens ?? 0,
+                totalTokens: totals._sum.totalTokens ?? 0,
+            },
+            byModel: byModel.map(m => ({
+                model: m.model,
+                provider: m.provider,
+                calls: m._count.id,
+                promptTokens: m._sum.promptTokens ?? 0,
+                completionTokens: m._sum.completionTokens ?? 0,
+                totalTokens: m._sum.totalTokens ?? 0,
+            })),
+            daily,
+            recent,
+        });
+    } catch (error) {
+        console.error('Admin token-usage error:', error);
+        res.status(500).json({ error: 'Error al obtener historial de tokens' });
+    }
+});
+
 // GET /api/admin/clients — All clients for tenant
 adminRouter.get('/clients', async (req: AuthRequest, res: Response): Promise<void> => {
     if (!requireAdmin(req, res)) return;

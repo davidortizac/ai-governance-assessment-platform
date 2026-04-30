@@ -40,7 +40,6 @@ const C = {
     LATENT: '#7C3AED',
 };
 
-const FALLBACK = 'El análisis automático no está disponible. Contacte a su consultor.';
 
 /* -------------------------------------------------------------------------- */
 /* LOOKUP TABLES                                                               */
@@ -64,41 +63,56 @@ const MATURITY_LABEL: Record<number, string> = {
 /* RICH TEXT HELPERS (inline **bold** support)                                */
 /* -------------------------------------------------------------------------- */
 
-/** Remove **bold** markers — used for height pre-calculation. */
+/**
+ * Normalize literal backslash-n sequences to real newlines.
+ * Some LLMs output the two-character sequence `\n` instead of a JSON newline escape,
+ * which PDFKit would render as the characters `\` and `n`, joining words on screen.
+ */
+function normalizeLineBreaks(text: string): string {
+    return text.replace(/\\n/g, '\n');
+}
+
+/** Remove **bold** markers and normalize line breaks — used for height pre-calculation. */
 function stripBold(text: string): string {
-    return text.replace(/\*\*([^*]+)\*\*/g, '$1');
+    return normalizeLineBreaks(text).replace(/\*\*([^*]+)\*\*/g, '$1');
 }
 
 /**
  * Render text to PDFKit with inline **bold** marker support.
  * Segments wrapped in **...** render with FB (bold font); others with FR (regular).
- * All other options (width, align, lineGap, fillColor) are forwarded as-is.
+ *
+ * Important: when bold markers are present, `align` is forced to 'left'.
+ * PDFKit's justify mode calculates word spacing per-segment when using `continued: true`,
+ * which causes words to run together or create very large gaps at font boundaries.
  */
 function renderRichText(
     doc: any, FR: string, FB: string, fillColor: string,
     text: string, x: number, y: number,
     opts: Record<string, unknown>,
 ): void {
-    const rawParts = text.split(/(\*\*[^*]+\*\*)/);
+    const normalized = normalizeLineBreaks(text);
+    const rawParts = normalized.split(/(\*\*[^*]+\*\*)/);
     const parts = rawParts
         .map(p => ({ bold: p.startsWith('**') && p.endsWith('**'), content: p.startsWith('**') ? p.slice(2, -2) : p }))
         .filter(p => p.content.length > 0);
 
     if (parts.length === 0) return;
 
-    // No bold markers — single call, more efficient
+    // No bold markers — single call, preserve opts including justify alignment
     if (parts.length === 1 && !parts[0].bold) {
-        doc.font(FR).fillColor(fillColor).text(text, x, y, opts);
+        doc.font(FR).fillColor(fillColor).text(normalized, x, y, opts);
         return;
     }
 
+    // Bold markers present — force left align to avoid PDFKit justify+continued spacing artifacts
+    const safeOpts = { ...opts, align: 'left' };
     parts.forEach((part, idx) => {
         const isLast = idx === parts.length - 1;
         doc.font(part.bold ? FB : FR).fillColor(fillColor);
         if (idx === 0) {
-            doc.text(part.content, x, y, { ...opts, continued: !isLast });
+            doc.text(part.content, x, y, { ...safeOpts, continued: !isLast });
         } else {
-            doc.text(part.content, { ...opts, continued: !isLast });
+            doc.text(part.content, { ...safeOpts, continued: !isLast });
         }
     });
 }
@@ -611,6 +625,113 @@ function buildFallbackLongTerm(assessment: any): string[] {
 }
 
 /* -------------------------------------------------------------------------- */
+/* PROGRAMMATIC EXECUTIVE FALLBACKS (used when LLM fields are empty)         */
+/* -------------------------------------------------------------------------- */
+
+const PILLAR_NAME: Record<string, string> = {
+    strategy_governance: 'Estrategia y Gobernanza',
+    employee_usage: 'Uso de IA por Empleados',
+    ai_development: 'Desarrollo de IA',
+    agents_integrations: 'Agentes e Integraciones',
+    infrastructure: 'Infraestructura',
+    ai_security: 'Seguridad de IA',
+};
+
+const MATURITY_LABEL_ES: Record<number, string> = {
+    1: 'Experimental', 2: 'Emergente', 3: 'Definido', 4: 'Gestionado', 5: 'Optimizado',
+};
+
+const RISK_LABEL_ES: Record<string, string> = {
+    CONTROLLED: 'Controlado', LOW: 'Bajo', MEDIUM: 'Medio',
+    HIGH: 'Alto', CRITICAL: 'Crítico', LATENT: 'Latente',
+};
+
+const RISK_URGENCY: Record<string, string> = {
+    CRITICAL: 'requiere atención inmediata: la brecha entre adopción y gobernanza es crítica y la organización opera con riesgo no gestionado',
+    HIGH: 'requiere intervención prioritaria: se detecta adopción activa de IA sin controles de seguridad suficientes',
+    MEDIUM: 'requiere un plan estructurado: existen iniciativas de IA pero los controles de gobernanza y seguridad son parciales',
+    LOW: 'se encuentra en trayectoria positiva, aunque aún hay brechas en controles avanzados y preparación regulatoria',
+    CONTROLLED: 'demuestra madurez sólida; el foco debe orientarse hacia optimización continua y preparación regulatoria',
+    LATENT: 'enfrenta riesgo latente: la baja adopción actual puede acelerar sin los controles adecuados en el momento del escalamiento',
+};
+
+function buildFallbackExecutiveSummary(assessment: any): string {
+    const clientName: string = assessment.client?.name ?? 'La organización';
+    const industry: string = assessment.client?.industry ?? 'el sector';
+    const matLevel: number = assessment.maturityLevel ?? 1;
+    const riskLevel: string = assessment.riskLevel ?? 'MEDIUM';
+    const overallScore: number = assessment.overallScore ? Number(assessment.overallScore) : 0;
+    const matLabel = MATURITY_LABEL_ES[matLevel] ?? 'Emergente';
+    const riskLabel = RISK_LABEL_ES[riskLevel] ?? 'Medio';
+
+    const scores: Array<{ name: string; score: number }> = (assessment.pillarScores ?? [])
+        .map((ps: any) => ({ name: PILLAR_NAME[ps.pillar?.key ?? ''] ?? ps.pillar?.name ?? ps.pillar?.key, score: Number(ps.score) }))
+        .sort((a: any, b: any) => a.score - b.score);
+
+    const weakest = scores[0];
+    const strongest = scores[scores.length - 1];
+
+    let summary = `**${clientName}** alcanzó un score general de **${overallScore.toFixed(2)}/4.0**, correspondiente al nivel de madurez **${matLevel} — ${matLabel}** en el marco CSIA. `;
+    summary += `El nivel de riesgo evaluado es **${riskLabel}**.`;
+
+    if (weakest) {
+        summary += ` El pilar con mayor brecha es **${weakest.name}** (${weakest.score.toFixed(2)}/4.0), que representa la prioridad de intervención más urgente para ${industry}.`;
+    }
+    if (strongest && strongest.score > 2) {
+        summary += ` El pilar más avanzado es **${strongest.name}** (${strongest.score.toFixed(2)}/4.0), que puede servir como base para escalar la madurez organizacional.`;
+    }
+
+    return summary;
+}
+
+function buildFallbackAwarenessMessage(assessment: any): string {
+    const riskLevel: string = assessment.riskLevel ?? 'MEDIUM';
+    const matLevel: number = assessment.maturityLevel ?? 1;
+    const matLabel = MATURITY_LABEL_ES[matLevel] ?? 'Emergente';
+    const urgency = RISK_URGENCY[riskLevel] ?? RISK_URGENCY['MEDIUM'];
+
+    const scores: Array<{ key: string; score: number }> = (assessment.pillarScores ?? [])
+        .map((ps: any) => ({ key: ps.pillar?.key ?? '', score: Number(ps.score) }))
+        .sort((a: any, b: any) => a.score - b.score);
+
+    const weakestKey = scores[0]?.key ?? 'ai_security';
+    const securityScore = scores.find(s => s.key === 'ai_security')?.score ?? 0;
+
+    let msg = `La organización ${urgency}. Con un nivel de madurez **${matLabel}**, `;
+
+    if (securityScore < 2) {
+        msg += `los controles de **Seguridad de IA** son insuficientes frente a las amenazas actuales: los ataques adversariales (MITRE ATLAS) y las vulnerabilidades OWASP Top 10 LLM operan en tiempo real. `;
+    } else {
+        msg += `la ventana de oportunidad para fortalecer controles preventivos es ahora, antes de que la adopción de IA escale sin la gobernanza correspondiente. `;
+    }
+
+    if (PILLAR_NAME[weakestKey]) {
+        msg += `Cada día sin un plan estructurado para **${PILLAR_NAME[weakestKey]}** incrementa la exposición operativa y regulatoria.`;
+    }
+
+    return msg;
+}
+
+function buildFallbackIndustryBenchmark(assessment: any): string {
+    const industry: string = assessment.client?.industry ?? 'el sector';
+    const overallScore: number = assessment.overallScore ? Number(assessment.overallScore) : 0;
+    const matLevel: number = assessment.maturityLevel ?? 1;
+    const matLabel = MATURITY_LABEL_ES[matLevel] ?? 'Emergente';
+
+    let benchmark = `Las organizaciones líderes en **${industry}** han avanzado hacia niveles 3–4 de madurez CSIA, implementando: inventario formal de modelos de IA, políticas de uso aprobadas por junta directiva, controles adversariales basados en MITRE ATLAS y monitoreo de prompts en tiempo real. `;
+
+    if (overallScore < 2) {
+        benchmark += `Con un score de **${overallScore.toFixed(2)}/4.0** (nivel **${matLabel}**), la organización se encuentra por debajo del benchmark sectorial. La regulación emergente (EU AI Act, ISO 42001) exige trazabilidad y clasificación de sistemas de IA por nivel de riesgo — requisitos que demandan un plan de madurez estructurado.`;
+    } else if (overallScore < 3) {
+        benchmark += `Con un score de **${overallScore.toFixed(2)}/4.0** (nivel **${matLabel}**), la organización se acerca al promedio sectorial, pero aún presenta brechas en controles técnicos activos y preparación regulatoria. Cerrar estas brechas es clave para mantener competitividad y cumplimiento normativo.`;
+    } else {
+        benchmark += `Con un score de **${overallScore.toFixed(2)}/4.0** (nivel **${matLabel}**), la organización supera el promedio sectorial. El siguiente paso es optimizar hacia un SOC Agéntico y preparar la trazabilidad requerida por marcos regulatorios internacionales.`;
+    }
+
+    return benchmark;
+}
+
+/* -------------------------------------------------------------------------- */
 /* MAIN REPORT                                                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -699,29 +820,31 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
 
         secLabel('RESUMEN EJECUTIVO', MARGIN, y);
         y += 14;
-        const execText = llmData?.executiveSummary ?? FALLBACK;
-        doc.font(FR).fontSize(12);
+        const execText = llmData?.executiveSummary || buildFallbackExecutiveSummary(assessment);
+        doc.font(FR).fontSize(11);
         renderRichText(doc, FR, FB, C.TEXT,
             execText, MARGIN, y, { width: CONTENT_W, align: 'justify', lineGap: 2 });
         y += doc.heightOfString(stripBold(execText), { width: CONTENT_W, lineGap: 2 }) + 22;
 
         /* Awareness callout */
-        const awText = llmData?.awarenessMessage ?? FALLBACK;
+        const awText = llmData?.awarenessMessage || buildFallbackAwarenessMessage(assessment);
         const awInnerW = CONTENT_W - 30;
-        doc.font(FR).fontSize(12);
+        doc.font(FR).fontSize(11);
         const awH = doc.heightOfString(stripBold(awText), { width: awInnerW, lineGap: 2 }) + 40;
         doc.rect(MARGIN, y, CONTENT_W, awH).fill(C.GOLD_BG);
         doc.rect(MARGIN, y, 4, awH).fill(C.GOLD);
         secLabel('POR QUÉ ES IMPORTANTE ACTUAR AHORA', MARGIN + 16, y + 12);
+        doc.fontSize(11);
         renderRichText(doc, FR, FB, C.TEXT_MUTED,
             awText, MARGIN + 16, y + 28, { width: awInnerW, align: 'justify', lineGap: 2 });
         y += awH + 22;
 
         /* Industry benchmark */
         if (y < FOOTER_Y - 80) {
-            const benchText = llmData?.industryBenchmark ?? FALLBACK;
+            const benchText = llmData?.industryBenchmark || buildFallbackIndustryBenchmark(assessment);
             secLabel('CONTEXTO DE INDUSTRIA', MARGIN, y);
             y += 14;
+            doc.font(FR).fontSize(11);
             renderRichText(doc, FR, FB, C.TEXT_MUTED,
                 benchText, MARGIN, y, { width: CONTENT_W, align: 'justify', lineGap: 2 });
             y += doc.heightOfString(stripBold(benchText), { width: CONTENT_W, lineGap: 2 }) + 18;
@@ -914,15 +1037,19 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
             const gapsText = (pillarLLM?.gaps && pillarLLM.gaps.trim()) ? pillarLLM.gaps : fallback.gaps;
             const recommendationText = (pillarLLM?.recommendation && pillarLLM.recommendation.trim()) ? pillarLLM.recommendation : fallback.recommendation;
 
-            /* Set font BEFORE measuring heights so they match rendering.
-               Use stripBold() so **markers** don't inflate height estimate. */
-            doc.font(FR).fontSize(1);
+            /* Measure heights at render font (11pt) before drawing anything.
+               Use stripBold() so **markers** don't inflate the estimate.
+               Gaps use left-align to avoid justify artifacts on numbered lists. */
+            doc.font(FR).fontSize(11);
+            const gapLines = normalizeLineBreaks(gapsText).split('\n').filter(l => l.trim() !== '');
+            const gH = gapLines.reduce((acc, line) => {
+                return acc + doc.heightOfString(stripBold(line.trim()), { width: innerW, lineGap: 3 }) + 5;
+            }, 0);
             const fH = doc.heightOfString(stripBold(findingsText), { width: innerW, lineGap: 2 });
-            const gH = doc.heightOfString(stripBold(gapsText), { width: innerW, lineGap: 2 });
             const rH = doc.heightOfString(stripBold(recommendationText), { width: innerW, lineGap: 2 });
 
-            /* cardH = header(54) + 3×(label 16 + text + gap 16) + bottom padding 16 */
-            const cardH = 54 + (16 + fH + 16) + (16 + gH + 16) + (16 + rH) + 16;
+            /* Add 20pt safety buffer so rendered text never bleeds outside the card */
+            const cardH = 54 + (16 + fH + 16) + (16 + gH + 16) + (16 + rH) + 16 + 20;
 
             if (py + cardH > FOOTER_Y - 20) {
                 doc.addPage();
@@ -948,24 +1075,30 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
 
             let cy2 = py + 54;
 
-            /* Findings */
+            /* Findings — justified prose */
             secLabel('HALLAZGOS', MARGIN + 14, cy2);
             cy2 += 16;
+            doc.fontSize(11);
             renderRichText(doc, FR, FB, C.TEXT_MUTED,
                 findingsText, MARGIN + 14, cy2, { width: innerW, align: 'justify', lineGap: 2 });
-            cy2 += fH + 16;
+            cy2 = doc.y + 16;
 
-            /* Gaps */
+            /* Gaps — render each numbered brecha on its own line (left-aligned, no justify) */
             secLabel('BRECHAS IDENTIFICADAS', MARGIN + 14, cy2);
             cy2 += 16;
-            renderRichText(doc, FR, FB, C.TEXT_MUTED,
-                gapsText, MARGIN + 14, cy2, { width: innerW, align: 'justify', lineGap: 2 });
-            cy2 += gH + 16;
+            doc.fontSize(11);
+            for (const line of gapLines) {
+                renderRichText(doc, FR, FB, C.TEXT_MUTED,
+                    line.trim(), MARGIN + 14, cy2, { width: innerW, align: 'left', lineGap: 3 });
+                cy2 = doc.y + 5;
+            }
+            cy2 += 11;
 
-            /* Recommendation */
+            /* Recommendation — justified prose */
             doc.font(FB).fontSize(12).fillColor(C.STEEL)
                 .text('RECOMENDACIÓN', MARGIN + 14, cy2, { lineBreak: false });
             cy2 += 16;
+            doc.fontSize(11);
             renderRichText(doc, FR, FB, C.TEXT,
                 recommendationText, MARGIN + 14, cy2, { width: innerW, align: 'justify', lineGap: 2 });
 
@@ -996,7 +1129,7 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
                     addHeader('Plan de Mejora (cont.)');
                     iy = CONTENT_Y;
                 }
-                doc.font(FR).fontSize(12);
+                doc.font(FR).fontSize(11);
                 const itemH = doc.heightOfString(stripBold(text), { width: CONTENT_W - 48, lineGap: 2 });
                 const blockH = Math.max(itemH + 20, 40);
                 const textY = iy + Math.max(8, (blockH - itemH) / 2);
@@ -1005,10 +1138,11 @@ export async function generatePDFReport(assessmentId: string): Promise<Buffer> {
                 /* Number badge — vertically centered */
                 const badgeY = iy + (blockH - 22) / 2;
                 doc.rect(MARGIN + 8, badgeY, 22, 22).fill(badgeColor);
-                doc.font(FB).fontSize(12).fillColor(C.WHITE)
+                doc.font(FB).fontSize(11).fillColor(C.WHITE)
                     .text(`${i + 1}`, MARGIN + 8, badgeY + 6,
                         { width: 22, align: 'center', lineBreak: false });
                 /* Text — vertically centered within block */
+                doc.fontSize(11);
                 renderRichText(doc, FR, FB, C.TEXT,
                     text, MARGIN + 38, textY, { width: CONTENT_W - 48, align: 'justify', lineGap: 2 });
 

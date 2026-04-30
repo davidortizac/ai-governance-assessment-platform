@@ -12,6 +12,7 @@
 import https from 'https';
 import http from 'http';
 import { SYSTEM_PROMPT, AI_ASSESSMENT_PROMPT } from '../config/llmPrompt';
+import prisma from '../lib/prisma';
 
 // Read fresh from process.env on every call so runtime changes (model selection) take effect
 const getOllamaUrl     = () => process.env.OLLAMA_URL      ?? 'http://host.docker.internal:11434/v1/chat/completions';
@@ -294,7 +295,8 @@ function buildPrompt(assessment: any): string {
 ## Detalle por Pilar
 ${buildPillarSection(assessment)}`;
 
-    return `${AI_ASSESSMENT_PROMPT}\n\n${dynamicContext}${buildContextSection(assessment)}`;
+    const reminder = `\n\nRECUERDA: Devuelve ÚNICAMENTE el JSON válido en español. Todos los campos deben estar completos: executiveSummary, awarenessMessage, industryBenchmark, improvementPlan (exactamente 3 quickWins y 3 longTerm), y los 6 pillarAnalyses con findings, gaps y recommendation. Ningún campo puede quedar vacío.`;
+    return `${AI_ASSESSMENT_PROMPT}\n\n${dynamicContext}${buildContextSection(assessment)}${reminder}`;
 }
 
 /** Process one character of a JSON string for closeTruncatedJson — returns updated state. */
@@ -327,21 +329,34 @@ function closeTruncatedJson(s: string): string {
     return s + [...opens].reverse().join('');
 }
 
-/** Detect if the LLM returned an empty/useless analysis (all fields blank). */
+/** Log warnings about empty fields — does NOT throw so partial results are still saved. */
 function warnIfEmpty(parsed: LLMAnalysis, model: string): void {
-    const emptyPillars = Object.values(parsed.pillarAnalyses ?? {})
+    const emptyExecutive = !parsed.executiveSummary && !parsed.awarenessMessage && !parsed.industryBenchmark;
+    const emptyPillarCount = Object.values(parsed.pillarAnalyses ?? {})
         .filter(p => !p.findings && !p.gaps && !p.recommendation).length;
-    if (!parsed.executiveSummary && !parsed.awarenessMessage && emptyPillars > 0) {
-        console.warn(`[LLM] WARNING: Analysis from model "${model}" appears empty. ` +
-            'Likely causes: (1) context window overflow — try reducing prompt or increase num_ctx; ' +
-            '(2) model unable to follow JSON schema — try a larger model.');
+
+    if (emptyExecutive && emptyPillarCount >= 4) {
+        console.warn(`[LLM] WARNING: Model "${model}" returned a fully empty analysis. ` +
+            'Likely causes: (1) context window too small — increase num_ctx; ' +
+            '(2) model too small — try a larger model; ' +
+            '(3) JSON mode not supported by this model.');
+    } else if (emptyExecutive) {
+        console.warn(`[LLM] WARNING: Model "${model}" returned empty executive summary fields — pillar analyses may be present. PDF will use programmatic fallback for those fields.`);
+    } else if (emptyPillarCount > 0) {
+        console.warn(`[LLM] WARNING: Model "${model}" returned ${emptyPillarCount}/6 empty pillar analyses.`);
     }
+}
+
+export interface LLMTrackingContext {
+    assessmentId?: string;
+    userId?: string;
 }
 
 /** Call Ollama API and return structured LLMAnalysis. Throws on failure.
  *  @param timeoutMs - optional override for the request timeout (defaults to OLLAMA_TIMEOUT_MS env var).
+ *  @param tracking  - optional context for token usage recording (assessmentId, userId).
  */
-export async function generateLLMAnalysis(assessment: any, timeoutMs?: number): Promise<LLMAnalysis> {
+export async function generateLLMAnalysis(assessment: any, timeoutMs?: number, tracking?: LLMTrackingContext): Promise<LLMAnalysis> {
     const prompt = buildPrompt(assessment);
     const ollamaUrl = getOllamaUrl();
     const ollamaModel = getOllamaModel();
@@ -358,23 +373,31 @@ export async function generateLLMAnalysis(assessment: any, timeoutMs?: number): 
         ],
         temperature: 0.3,
         top_p: 0.9,
-        repeat_penalty: 1.1,
         stream: false,
-        // Local 7B models can realistically produce ~4096 output tokens.
-        // Cloud models (Gemini, GPT) support much more — cap at 8192 for safety.
-        max_tokens: isLocalOllama ? Math.min(getNumCtx(), 8192) : 8192,
-        // Ollama-specific: num_ctx is configurable at runtime via OLLAMA_NUM_CTX env var.
-        // num_predict is capped at half the context window or 8192, whichever is smaller.
+        max_tokens: 8192,
+        // Force JSON output on ALL providers — Ollama's /v1 API honours this just like cloud APIs.
+        // Prevents prose wrappers, markdown code blocks, and partial schema filling.
+        response_format: { type: 'json_object' },
+        // Ollama-specific parameters — not sent to cloud providers (they reject unknown fields).
         ...(isLocalOllama && {
+            repeat_penalty: 1.1,
             options: {
                 num_ctx:     getNumCtx(),
-                num_predict: Math.min(Math.floor(getNumCtx() / 2), 8192),
+                num_predict: 8192,
             },
         }),
     });
 
     console.log(`[LLM] POST ${ollamaUrl} (model=${ollamaModel}, local=${isLocalOllama}, timeout=${ollamaTimeout}ms)`);
-    const { status, body: rawBody } = await httpPost(ollamaUrl, requestBody, ollamaTimeout);
+    let { status, body: rawBody } = await httpPost(ollamaUrl, requestBody, ollamaTimeout);
+
+    // Some older Ollama builds reject response_format for local models — retry without it.
+    if (status === 400 && isLocalOllama && rawBody.includes('response_format')) {
+        console.warn('[LLM] response_format rejected by this Ollama build — retrying without it');
+        const bodyWithoutFormat = JSON.parse(requestBody);
+        delete bodyWithoutFormat.response_format;
+        ({ status, body: rawBody } = await httpPost(ollamaUrl, JSON.stringify(bodyWithoutFormat), ollamaTimeout));
+    }
 
     if (status >= 400) {
         throw new Error(`Ollama HTTP ${status}: ${rawBody.slice(0, 200)}`);
@@ -389,10 +412,29 @@ export async function generateLLMAnalysis(assessment: any, timeoutMs?: number): 
 
     const raw: string = data?.choices?.[0]?.message?.content ?? '';
     const finishReason: string = data?.choices?.[0]?.finish_reason ?? '';
+    const usageData = data?.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
+
+    console.log(`[LLM] finish_reason=${finishReason} raw_length=${raw.length} preview=${raw.slice(0, 200).replace(/\n/g, '\\n')}`);
 
     if (finishReason === 'length') {
         console.warn('[LLM] Response truncated (finish_reason=length) — attempting JSON close recovery. ' +
             'If this happens often, switch to a model with larger context or increase num_ctx.');
+    }
+
+    /* Save token usage asynchronously (non-blocking) */
+    if (usageData && (usageData.total_tokens ?? 0) > 0) {
+        prisma.tokenUsage.create({
+            data: {
+                assessmentId: tracking?.assessmentId ?? null,
+                userId:       tracking?.userId       ?? null,
+                model:        ollamaModel,
+                provider:     isLocalOllama ? 'ollama' : 'google',
+                promptTokens:     usageData.prompt_tokens     ?? 0,
+                completionTokens: usageData.completion_tokens ?? 0,
+                totalTokens:      usageData.total_tokens      ?? 0,
+            },
+        }).catch(err => console.warn('[LLM] Token usage save failed:', err));
+        console.log(`[LLM] Tokens — prompt: ${usageData.prompt_tokens ?? 0}, completion: ${usageData.completion_tokens ?? 0}, total: ${usageData.total_tokens ?? 0}`);
     }
 
     // Strip <think>...</think> blocks (deepseek-r1)

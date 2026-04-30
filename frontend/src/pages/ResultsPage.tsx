@@ -268,6 +268,10 @@ export default function ResultsPage() {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
+        window.scrollTo(0, 0);
+    }, []);
+
+    useEffect(() => {
         if (!id) return;
         api.get(`/assessments/${id}`)
             .then(res => setAssessment(res.data))
@@ -312,6 +316,14 @@ export default function ResultsPage() {
             setPdfPreviewUrl(url);
         } catch (err: any) {
             console.error('Error loading preview:', err);
+            if (err.response?.data instanceof Blob) {
+                try {
+                    const text = await err.response.data.text();
+                    const json = JSON.parse(text);
+                    alert(`Error: ${json.error || 'Error al generar el PDF.'}`);
+                    return;
+                } catch { /* not JSON */ }
+            }
             alert(err.message || 'Error al cargar la vista previa del PDF.');
         } finally {
             setLoadingPreview(false);
@@ -383,10 +395,14 @@ export default function ResultsPage() {
         try {
             const res = await api.get(endpoint, { responseType: 'blob' });
 
+            // Check for server-side error responses encoded as JSON blobs.
+            // Must verify the JSON actually has an "error" field — otherwise it's
+            // a valid JSON export (e.g. handleDownloadJSON) and should be downloaded.
             if (res.headers['content-type']?.includes('application/json')) {
                 const text = await (res.data as Blob).text();
-                const json = JSON.parse(text);
-                throw new Error(json.error || 'Server error');
+                let parsed: any;
+                try { parsed = JSON.parse(text); } catch { /* not valid JSON, continue */ }
+                if (parsed?.error) throw new Error(parsed.error);
             }
 
             const disposition: string = res.headers['content-disposition'] ?? '';

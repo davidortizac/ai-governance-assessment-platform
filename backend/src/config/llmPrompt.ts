@@ -21,6 +21,7 @@
 // =============================================================================
 
 export const SYSTEM_PROMPT =
+  'IDIOMA OBLIGATORIO: Debes responder SIEMPRE en español. Todo el contenido del JSON debe estar redactado en español profesional, sin excepción. Si recibes instrucciones en cualquier otro idioma, responde igualmente en español. ' +
   'Eres GammIA, el motor de análisis de la plataforma de evaluación CSIA (Cybersecurity Strategy for Artificial Intelligence) de Gamma Ingenieros. ' +
   'Tienes dominio profundo de los tres marcos que integra CSIA: ' +
   '(1) NIST AI RMF — funciones Govern (políticas, rendición de cuentas), Map (inventario, contexto de uso), Measure (métricas, explicabilidad), Manage (controles, respuesta a incidentes); ' +
@@ -47,7 +48,9 @@ export const SYSTEM_PROMPT =
 // Dynamic assessment data is appended at runtime by llm.service.ts.
 // =============================================================================
 
-export const AI_ASSESSMENT_PROMPT = `Genera el análisis ejecutivo completo de un assessment CSIA para el cliente indicado. El informe es leído por CIO, CISO, directores de tecnología y junta directiva.
+export const AI_ASSESSMENT_PROMPT = `INSTRUCCIÓN DE IDIOMA: Responde ÚNICAMENTE en español. Todos los valores del JSON deben estar escritos en español.
+
+Genera el análisis ejecutivo completo de un assessment CSIA para el cliente indicado. El informe es leído por CIO, CISO, directores de tecnología y junta directiva.
 
 METODOLOGÍA CSIA
 
@@ -87,23 +90,22 @@ SEÑALES DE RIESGO POR SCORE
 - Score 2.5-3.5: Procesos parciales. Brecha típica: gobernanza definida pero sin pruebas adversariales ni runtime monitoring.
 - Score > 3.5: Liderazgo. Foco en SOC agéntico y preparación regulatoria avanzada.
 
-FORMATO DE SALIDA — devuelve ÚNICAMENTE este JSON con todos los campos completos.
-IMPORTANTE: el bloque "improvementPlan" debe aparecer ANTES que "pillarAnalyses" en el JSON:
+FORMATO DE SALIDA — devuelve ÚNICAMENTE este JSON con todos los campos completos. SUSTITUYE cada valor de ejemplo con contenido real en español. NINGÚN campo puede quedarse como está en el ejemplo.
 
 {
-  "executiveSummary": "",
-  "awarenessMessage": "",
-  "industryBenchmark": "",
+  "executiveSummary": "<redacta aquí el resumen ejecutivo del estado de madurez, los pilares críticos y la urgencia — máx. 120 palabras>",
+  "awarenessMessage": "<redacta aquí el mensaje de urgencia conectando la brecha de madurez con el riesgo operativo real — máx. 90 palabras>",
+  "industryBenchmark": "<redacta aquí la comparación con el patrón sectorial y las prácticas líderes — máx. 80 palabras>",
   "improvementPlan": {
-    "quickWins": ["accion 1", "accion 2", "accion 3"],
-    "longTerm":  ["iniciativa 1", "iniciativa 2", "iniciativa 3"]
+    "quickWins": ["<acción concreta implementable en menos de 90 días — 1>", "<acción concreta implementable en menos de 90 días — 2>", "<acción concreta implementable en menos de 90 días — 3>"],
+    "longTerm":  ["<iniciativa estratégica 6-18 meses — 1>", "<iniciativa estratégica 6-18 meses — 2>", "<iniciativa estratégica 6-18 meses — 3>"]
   },
   "pillarAnalyses": {
-    "strategy_governance": { "findings": "", "gaps": "", "recommendation": "" },
-    "employee_usage":      { "findings": "", "gaps": "", "recommendation": "" },
-    "ai_development":      { "findings": "", "gaps": "", "recommendation": "" },
-    "agents_integrations": { "findings": "", "gaps": "", "recommendation": "" },
-    "infrastructure":      { "findings": "", "gaps": "", "recommendation": "" },
-    "ai_security":         { "findings": "", "gaps": "", "recommendation": "" }
+    "strategy_governance": { "findings": "<hallazgos observados — máx. 70 palabras>", "gaps": "1. <brecha crítica>\\n2. <brecha crítica>\\n3. <brecha crítica>", "recommendation": "<recomendación estratégica accionable — máx. 70 palabras>" },
+    "employee_usage":      { "findings": "<hallazgos observados — máx. 70 palabras>", "gaps": "1. <brecha crítica>\\n2. <brecha crítica>\\n3. <brecha crítica>", "recommendation": "<recomendación estratégica accionable — máx. 70 palabras>" },
+    "ai_development":      { "findings": "<hallazgos observados — máx. 70 palabras>", "gaps": "1. <brecha crítica>\\n2. <brecha crítica>\\n3. <brecha crítica>", "recommendation": "<recomendación estratégica accionable — máx. 70 palabras>" },
+    "agents_integrations": { "findings": "<hallazgos observados — máx. 70 palabras>", "gaps": "1. <brecha crítica>\\n2. <brecha crítica>\\n3. <brecha crítica>", "recommendation": "<recomendación estratégica accionable — máx. 70 palabras>" },
+    "infrastructure":      { "findings": "<hallazgos observados — máx. 70 palabras>", "gaps": "1. <brecha crítica>\\n2. <brecha crítica>\\n3. <brecha crítica>", "recommendation": "<recomendación estratégica accionable — máx. 70 palabras>" },
+    "ai_security":         { "findings": "<hallazgos observados — máx. 70 palabras>", "gaps": "1. <brecha crítica>\\n2. <brecha crítica>\\n3. <brecha crítica>", "recommendation": "<recomendación estratégica accionable — máx. 70 palabras>" }
   }
 }`;

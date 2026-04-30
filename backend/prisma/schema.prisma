@@ -180,3 +180,17 @@ model Integration {
   @@unique([tenantId, type])
   @@map("integrations")
 }
+
+model TokenUsage {
+  id               String   @id @default(uuid())
+  assessmentId     String?
+  userId           String?
+  model            String
+  provider         String   // 'ollama' | 'google'
+  promptTokens     Int      @default(0)
+  completionTokens Int      @default(0)
+  totalTokens      Int      @default(0)
+  createdAt        DateTime @default(now())
+
+  @@map("token_usage")
+}

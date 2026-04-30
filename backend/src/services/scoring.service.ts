@@ -123,7 +123,7 @@ export async function calculateAssessmentScores(assessmentId: string) {
             },
         }).then(full => {
             if (!full) return;
-            return generateLLMAnalysis(full).then(llmAnalysis =>
+            return generateLLMAnalysis(full, undefined, { assessmentId, userId: full.createdById }).then(llmAnalysis =>
                 prisma.assessment.update({
                     where: { id: assessmentId },
                     data: { llmAnalysis: llmAnalysis as any },
